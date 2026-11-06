@@ -1,0 +1,31 @@
+# 工作目录配置
+workspace:
+  root: "D:\\VedioRecords\\工作区"
+  
+# 知识库配置
+knowledge_base:
+  root: "D:\\study\\python\\deal_vedio\\src\\deal_video_agent\\knowledge_base"
+  
+# 脚本目录配置
+scripts:
+  words_dir: "D:\\study\\python\\deal_vedio\\src\\words"
+  splice_dir: "D:\\study\\python\\deal_vedio\\src\\splice_vedio"
+  util_dir: "D:\\study\\python\\deal_vedio\\src\\util"
+
+# API配置
+api:
+  provider: "deepseek"
+  model: "deepseek-reasoner"
+  max_tokens: 8192
+  env_key: "deepseek_env_key"
+  base_url: "https://api.deepseek.com"
+
+# 字幕处理配置
+subtitle:
+  output_format: "行号:纠正后内容"
+  max_retries: 3
+  timeout: 120
+
+# 标题文件配置
+titles:
+  file: "titles/all_collection_titles.md"

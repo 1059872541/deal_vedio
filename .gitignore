@@ -1,0 +1,36 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ---- 虚拟环境 ----
+.venv/
+venv/
+
+# ---- Node ----
+node_modules/
+
+# ---- 运行时产物 ----
+*.log
+video_processing_metadata.json
+.redistribute_log.json
+*.part1.*
+*.part2.*
+title_compare/
+
+# ---- 本地状态（含会话与账号记忆，勿提交）----
+.claude/projects/
+.claude/settings.local.json
+
+# ---- 含明文凭证，不入库（百度/夸克 MCP 配置）----
+.mcp.json
+
+# ---- 编辑器 / 系统 ----
+.idea/
+.vscode/
+Thumbs.db
+desktop.ini
+
+# ---- 打包备份 ----
+*.zip

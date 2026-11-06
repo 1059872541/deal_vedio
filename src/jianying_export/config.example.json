@@ -1,0 +1,20 @@
+{
+  "export_jobs": [
+    {
+      "draft_name": "MC-合集-7",
+      "output_path": "D:\\VedioRecords\\工作区\\我的世界\\合集\\合集七\\成片",
+      "resolution": "1080P",
+      "framerate": "30fps",
+      "timeout": 10800
+    },
+    {
+      "draft_name": "MC-合集-8",
+      "output_path": "D:\\VedioRecords\\工作区\\我的世界\\合集\\合集八\\成片",
+      "resolution": "1080P",
+      "framerate": "30fps",
+      "timeout": 10800
+    }
+  ],
+  "pause_between": 10.0,
+  "notes": "将此文件复制为config.json并修改配置。resolution可选值: 8K, 4K, 2K, 1080P, 720P, 480P。framerate可选值: 24fps, 25fps, 30fps, 50fps, 60fps。"
+}

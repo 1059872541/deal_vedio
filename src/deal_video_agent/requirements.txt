@@ -1,0 +1,14 @@
+# deal_video_agent 依赖
+
+# LangGraph (Agent框架)
+langgraph>=0.2.0
+
+# 配置管理
+pyyaml>=6.0
+pydantic>=2.0
+
+# API调用 (已在requirements.txt中，此处显式声明)
+openai>=1.0.0
+
+# 其他工具
+typing-extensions>=4.0
