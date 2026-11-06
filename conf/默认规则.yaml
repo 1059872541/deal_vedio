@@ -1,0 +1,67 @@
+# ══════════════════════════════════════════════════════════════════
+# 公共规则 —— 全项目默认值
+#
+# 用途：创建新批次时作为「模板」。值会被复制进该批次的 game.yaml，
+#       之后运行时只读 game.yaml，不再回头读本文件。
+#
+# 因此：改这里只影响【以后新建】的批次；已建批次完全不受影响。
+#
+# 若 conf/游戏规则/{游戏}.yaml 存在 → 与之深合并（diff 覆盖本文件）。
+#
+# 注意：本文件只放【业务规则】。
+#       路径、ffmpeg 位置、剪映草稿目录这类【机器相关】的东西在 conf/本机.yaml。
+# ══════════════════════════════════════════════════════════════════
+
+# ── 时长（单位：秒）──
+duration:
+  material_per_collection: 7200 # 每个合集的素材目标时长 = 2 小时
+  episode_body: 360 # 每个短片的「正文」时长 = 6 分钟（不含片头片尾）
+  episode_count: 20 # 每个合集的集数
+  segment_tolerance: 3 # 关键帧对齐容差 ±3 秒
+
+# ── 视频导出参数（剪映「视频导出」面板上的 5 项）──
+export:
+  resolution: 1080P # 8K / 4K / 2K / 1080P / 720P / 480P
+  bitrate: 推荐 # 推荐 / 更高 / 更低 / 自定义
+  codec: H.264
+  format: mp4
+  framerate: 30fps # 24 / 25 / 30 / 50 / 60 fps
+  timeout_seconds: 10800 # 单次导出超时 = 3 小时
+  pause_between: 10 # 连跑多个草稿时的间隔秒数
+
+# ── 命名规范 ──
+# 可用占位符：
+#   {host}       主播            {game}   游戏名
+#   {subtitle}   副标题          {collection} 合集全名（由 collection 模板生成）
+#   {cn_ep}      中文集号（一二三…）  {ep}   阿拉伯集号（1 2 3…）
+#   {title}      该集标题
+naming:
+  collection: "{host}之{game} {subtitle}"
+  # 例：波波之我的世界 收集强力变身-上篇
+
+  episode: "第{cn_ep}集 {title}"
+  # 例：第一集 林中小屋初探
+
+  file: "{collection} {episode}.mp4"
+  # 例：波波之我的世界 收集强力变身-上篇 第一集 林中小屋初探.mp4
+  # 注意：段与段之间【只能有一个空格】
+
+# ── 网盘目录结构 ──
+# 占位符：{month} 月份  {host} 主播  {game} 游戏/栏目
+#         {collection} 合集全名  {filename} 文件名
+netdisk:
+  path: "/{month}/{host}/{game}/{collection}/{filename}"
+  # 例：/2026-06/波波/我的世界定制/波波之我的世界 收集强力变身-上篇/xxx.mp4
+
+# ── 台账「类别」列默认值 ──
+meta:
+  category: 端游 # 端游 / 手游 / 主机
+
+# ── ffmpeg 拼接编码参数（技术项，平时不用动）──
+encode:
+  encoder_priority: [h264_qsv, libx264] # 硬件优先，失败回退软件
+  quality: 23 # -global_quality / -crf
+  preset: medium
+  pix_fmt: yuv420p
+  audio_codec: aac
+  audio_bitrate: 128k
