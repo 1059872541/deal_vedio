@@ -18,7 +18,7 @@
 ### 决策 2：为什么从固定目录升级为交互式选择
 
 - **问题**：`new_project.py` 只能在空根目录下创建新项目。如果根目录下已有项目（比如手动创建的文件夹），脚本直接报错退出。
-- **方案**：创建 `new_project_01.py`，在 `init_game()` 中增加 `exist_ok` 参数，并在入口增加交互选择流程——扫描根目录 → 列表展示 → 用户选目标 → 创建/管理。
+- **方案**：创建 `new_project_01.py`，在 `init_game()` 中增加 `exist_ok` 参数，并在入口增加交互选择流程——扫描根目录 → 列表展示 → 用户选目标 → 创建/管理。（该文件与 `new_project.py` 已于 2026-11-06 的清理中删除，保留 `new_project_01_AI_USE.py` 一个实现；详见本文末「2026-11-06 代码清理」。）
 - **取舍**：增加了代码分支复杂度（交互 vs 参数驱动），但兼容了"已经有项目目录"的真实使用场景。
 - **结果**：用户不再需要记住项目名拼写，选数字即可。
 
@@ -248,7 +248,7 @@
 - **问题**：流水线的每个环节都可以自动化，但环节之间的衔接需要人来判断（"这期素材剪辑完了吗？""标题风格合适吗？"）。
 - **方案**：采用"人触发、机器执行"的模式——每个脚本可独立运行，但需要人主动启动。
 - **取舍**：全自动化意味着引入复杂的状态机/工作流引擎来管理各环节的依赖关系。当前的半自动化模式灵活性更高，人力介入点清晰。代价是整体流水线没有统一的"一键运行"入口。
-- **结果**：`run_workflow.py` 列在待办中但尚未实现。
+- **结果**：`run_workflow.py` 列在待办里一直没实现。2026-11-06 复盘后确认**它不该实现**：真正在编排流程的是 Claude Code / OpenCode + Skill + MCP，Python 只提供确定性的原子能力。详见本节决策 3。
 
 ### 决策 2：为什么 Skill 和 Python 脚本并存
 
@@ -256,6 +256,58 @@
 - **方案**：用 OpenCode Skill（对话式 AI 引导）处理需要 AI 判断的任务；用 Python 脚本处理确定性的文件操作。
 - **取舍**：Skill 依赖 OpenCode 环境，不能在标准 Python 环境下运行。但 Skill 的优势在于可以理解语义（"把第 12 集的标题改得更吸引人"），这是脚本做不到的。
 - **结果**：当前流水线的两个"断裂处"——视频重命名和 Excel 生成——正是用 Skill 填补的。
+
+---
+
+### 决策 3：为什么放弃 `run_workflow.py`，改由 LLM 做编排
+
+- **问题**：README 一直把"创建 `run_workflow.py` 主入口"列为高优先级待办，但一年多没做。是真的没时间，还是方向本身有问题？
+- **调查**：翻开工件时发现，实际驱动流程的是 `.claude/skills/` 下的 SKILL.md——每个 skill 都是一份结构化提示词，告诉 AI 该调哪个脚本、怎么传参、结果怎么排版。`material-redistribute/SKILL.md` 里甚至写着 `cd d:/study/python/deal_vedio/src/util && python redistribute_material.py {game_name}`。
+- **根因**：流水线里大量节点是"判断"而非"执行"——这段素材讲的是什么、20 个标题哪个能用、素材录够了没、字幕错得离谱还是只是错别字。这些判断写不进 `if/else`，而 LLM 天生擅长。
+- **方案**：Python 侧只提供稳定、可组合、单条命令的原子能力；编排交给 LLM + Skill + MCP。`run_workflow.py` 降级为"可选薄壳"，不再是架构目标。
+- **取舍**：放弃"一键全自动"的叙事，接受流程需要 LLM 在场。代价是可复现性变弱（同样输入，LLM 可能走不同路径），收益是能处理真实业务里的模糊判断。
+- **教训**：一个待办挂在清单上超过半年，往往不是因为没空，而是因为它本身是伪需求。该做的是重新质疑目标，不是排期。
+- **待改进**：目前 8 处 skill 命令写死了 `cd` 绝对路径，说明脚本还没有稳定的 CLI 边界。等统一成 `python -m vedio <stage>` 后，skill 才能真正变薄。
+
+---
+
+## 2026-11-06 代码清理
+
+### 决策 1：为什么一次性删掉 4,300 行
+
+- **问题**：项目从 55 个 Python 文件膨胀到没人敢动。哪些是真在跑的？
+- **调查方法**：
+  1. 用 `ast` 遍历全仓，建真实的 import 图（不靠 `grep import` 猜）
+  2. 对每个"零引用"候选做二次确认，区分"零引用但能跑的一次性脚本"和"零引用的死架构"
+  3. 按证据强度分 A / B / C 三档：A = 零引用且有硬证据；B = 零引用但功能可用；C = 产线在用，明确列出禁止误删
+- **发现**：
+  - `util/` 有 4 个类模块（`TextUtils` / `ConsoleUtils` / `PathResolver` / `ConfigManager`，共约 790 行）全项目零引用，其中后两个连 `import` 都会 `NameError: name 'Path' is not defined` —— 因为 `pathlib.Path` 根本没导入，而这行代码一次都没被执行过
+  - `ConsoleUtils` 的颜色系统在 Windows 上被 `if sys.platform == 'win32': return text` 直接短路，唯一目标平台上整套 ANSI 代码是死的
+  - `watermark/` 整模块（约 1000 行）EVOLUTION.md 自己写着"暂停开发"
+  - `words/add_line_order.py` 与 `agent/tools/add_line_order.py` 重复，且后者的 `script_path` 参数从未被使用
+- **取舍**：删 `check_subtitle.py` + `llm_validate_subtitle.py` 意味着"字幕复查"环节暂时无工具。但这两个脚本已断链（第二阶段 `import` 的是已删除的 `src/client/` 模块），留着是负资产。已记入 TODO 作为"待重写"。
+- **结果**：11,165 → 6,883 行，55 → 27 文件。27 个文件语法检查全过，11 个关键模块 import 验证全过。
+
+### 决策 2：为什么重建 git 历史而不是 `filter-branch`
+
+- **问题**：第一次提交里含有百度网盘明文 `access_token`。
+- **方案**：仓库只有 1 个本地提交、无远端、无协作者，直接删 `.git` 重新初始化，比 `filter-repo` / `filter-branch` 简单且彻底（后者容易漏掉 reflog 和 packfile）。
+- **取舍**：丢失早期提交历史——但那本来就是我自己刚提交的 2 个 commit，没有信息价值。
+- **教训**：**第一次 commit 之前就该跑一遍凭证扫描**，而不是事后补救。扫描命令：`git grep -i -I -E 'access_token|password|api[_-]?key|secret'`。
+
+### 决策 3：为什么 `.claude` 只放行两个 skill
+
+- **问题**：`.claude/` 下有 4 个 skill + `settings.json` + 会话记忆，其中 `video-title-compare` 的 references 里存着 8 处明文 Token。
+- **方案**：`.claude/*` 整体忽略，然后**逐级**放行 `batch-video-renamer` 和 `material-redistribute`（这两个是产线 skill，且含 685 行 Python 实现）。`baiducloud-operate` / `quarkpan-mcp-operate` 因为参考文档含 Token，保持本地不入库。
+- **坑**：git 的否定规则必须逐级放行父目录，写成 `.claude/*` + `!.claude/skills/batch-video-renamer/` 是**无效**的，因为中间的 `.claude/skills/` 仍被忽略。必须写成四行：
+  ```gitignore
+  .claude/*
+  !.claude/skills/
+  .claude/skills/*
+  !.claude/skills/batch-video-renamer/
+  !.claude/skills/material-redistribute/
+  ```
+- **取舍**：换机器时两个网盘 skill 需要重写。可接受——它们本质是 MCP 官方文档的副本。
 
 ---
 

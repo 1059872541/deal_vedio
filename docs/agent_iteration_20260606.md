@@ -2,6 +2,8 @@
 
 > 本次迭代围绕三个问题展开：标题质量、知识库质量、标题文件管理。涉及 5 个文件，包含已实施和已设计待实施的变更。
 
+> **2026-11-06 补注**：本文第 4 节「性能追踪方案」当时标记为"待编码"，**现已全部实现**——`@trace_node` 装饰器、`state.node_timings` / `api_details` 字段、`deepseek_api` 解析 usage、`print_result` 性能区块均已落地（见 `EVOLUTION.md` 决策 8）。前三节为当时的历史记录，保持原样。
+
 ---
 
 ## 一、标题生成质量修复
@@ -133,9 +135,9 @@ for part in reversed(parts):  # "剪辑" → "合集一" → "合集" → ...
 
 ---
 
-## 四、性能追踪方案（待实施）
+## 四、性能追踪方案（已实施）
 
-已设计但尚未编码的性能评估方案：
+已设计并已编码的性能评估方案：
 
 ### 设计
 
@@ -169,8 +171,9 @@ Token 消耗: 4,650 tokens | 预估成本 ~$0.008
 缓存命中: 0 / 3,650 = 0.0%
 ```
 
-### 状态：待编码
-- [ ] `state.py` — 加 `node_timings` 和 `api_details` 字段
-- [ ] `deepseek_api.py` — `stream_chat` 解析 usage 并返回
-- [ ] `nodes.py` — 节点加上 `@trace_node` 装饰器
-- [ ] `subtitle_agent.py` — `print_result` 增加性能区块
+### 状态：已实施（2026-11-06 核实）
+
+- [x] `state.py` — 加 `node_timings` 和 `api_details` 字段
+- [x] `deepseek_api.py` — 解析 usage 并返回
+- [x] `nodes.py` — 节点加上 `@trace_node` 装饰器
+- [x] `subtitle_agent.py` — `print_result` 增加性能区块

@@ -14,7 +14,7 @@
 ## 系统要求
 
 - **操作系统**：Windows 10/11（仅支持Windows平台）
-- **Python版本**：Python 3.8+
+- **Python版本**：Python 3.13+
 - **依赖库**：`uiautomation`
 - **剪映版本**：剪映专业版 6.x 及以下版本
 
@@ -100,8 +100,7 @@ src/jianying_export/
 ├── exceptions.py            # 异常定义
 ├── export_draft.py          # 批量导出脚本（主入口）
 ├── config.example.json      # 配置文件示例
-├── README.md                # 本文件
-└── test_import.py           # 导入测试脚本
+└── README.md                # 本文件
 ```
 
 ## API参考
@@ -174,12 +173,15 @@ controller.export_draft(
 
 如需调试，可修改 `controller.py` 中的等待时间或添加更多日志。
 
-## 测试
+## 冒烟检查
 
-运行导入测试（不实际调用剪映）：
+不启动剪映、只验证模块可导入：
+
 ```bash
-python -m src.jianying_export.test_import
+python -c "import jianying_export; print(jianying_export.__all__)"
 ```
+
+> 早期的 `test_import.py` 已移除（2026-11-06 清理），功能由上面这行替代。
 
 ## 迁移说明
 
