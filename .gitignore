@@ -19,9 +19,8 @@ video_processing_metadata.json
 *.part2.*
 title_compare/
 
-# ---- 本地状态（含会话与账号记忆，勿提交）----
-.claude/projects/
-.claude/settings.local.json
+# ---- 本地 AI 工具配置（skills / settings / 会话记忆），不入库 ----
+.claude/
 
 # ---- 含明文凭证，不入库（百度/夸克 MCP 配置）----
 .mcp.json
