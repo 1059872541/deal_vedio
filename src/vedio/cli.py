@@ -548,6 +548,36 @@ def cmd_ledger(args: argparse.Namespace, project: context.Project) -> int:
     return EXIT_OK if result.ok else EXIT_FAIL
 
 
+def cmd_balance(args: argparse.Namespace, project: context.Project) -> int:
+    """匀素材：录制之后、剪辑之前。只报事实，决策给人。"""
+    from . import progress as progress_mod
+    from .stages import balance as balance_stage
+
+    if getattr(args, "from_collection", None):
+        result = balance_stage.move(project, args.from_collection, args.to_collection,
+                                    apply=args.apply)
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(f"  {'已执行' if args.apply else '预览（加 --apply 真执行）'}："
+                  f"{args.from_collection} → {args.to_collection}")
+        return EXIT_OK
+
+    report = balance_stage.check(project, _split_list(args.collections))
+    # 全部在容差内 → 这个环节就算过了
+    if report["ok"]:
+        for row in report["rows"]:
+            progress_mod.record(project, row["collection"], "匀素材")
+
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        print(balance_stage.render(report))
+        if not report["ok"]:
+            print("\n  匀素材：vedio balance --from 合集一 --to 合集二 --apply")
+    return EXIT_OK if report["ok"] else EXIT_FAIL
+
+
 def cmd_run(args: argparse.Namespace, project: context.Project) -> int:
     """按步骤推进（可夜里跑）"""
     from .events import EventLog
@@ -779,6 +809,16 @@ def build_parser() -> argparse.ArgumentParser:
                           help="让模型根据标题提一个篇名，只给人看，不写文件")
     p_series.add_argument("--force", action="store_true", help="副标题一样也重写")
     p_series.set_defaults(handler=cmd_series)
+
+    p_balance = sub.add_parser("balance", help="匀素材：查超额，或把一个合集多的切给下一个")
+    add_common(p_balance)
+    p_balance.add_argument("--collections", help="只查这些合集，逗号分隔；不传=全部")
+    p_balance.add_argument("--from", dest="from_collection", metavar="合集一",
+                           help="从这里切走（配 --to）")
+    p_balance.add_argument("--to", dest="to_collection", metavar="合集二",
+                           help="切到哪里")
+    p_balance.add_argument("--apply", action="store_true", help="真执行（不加只预览）")
+    p_balance.set_defaults(handler=cmd_balance)
 
     p_logs = sub.add_parser("logs", help="看批次日志（只读）")
     add_common(p_logs)

@@ -39,7 +39,7 @@ class TempCase(unittest.TestCase):
 class TestCreate(unittest.TestCase):
     def test_header_and_rows(self):
         t = P.ProgressTable.create("我的世界-2026-12", ["合集一", "合集二"])
-        self.assertEqual(t.header, ["合集", "剪辑", "字幕", "篇名", "导出", "拼接", "命名", "台账"])
+        self.assertEqual(t.header, ["合集", "匀素材", "剪辑", "字幕", "篇名", "导出", "拼接", "命名", "台账"])
         self.assertEqual(t.collections(), ["合集一", "合集二"])
         self.assertTrue(all(c == P.EMPTY for c in t.rows[0][1:]))
 
@@ -111,6 +111,8 @@ class TestParse(TempCase):
         t = P.ProgressTable.parse(old)
         self.assertIn("篇名", t.header)
         self.assertLess(t.header.index("篇名"), t.header.index("导出"))
+        # 匀素材排在剪辑之前
+        self.assertLess(t.header.index("匀素材"), t.header.index("剪辑"))
         self.assertEqual(t.cell("合集一", "剪辑"), "✓")
         self.assertEqual(t.cell("合集一", "篇名"), P.EMPTY)
 
@@ -158,7 +160,7 @@ class TestSetCell(unittest.TestCase):
             self.t.set_cell("合集一", "不存在的环节")
 
     def test_human_added_column_is_kept(self):
-        text = self.t.render().replace("| 合集 | 剪辑 |", "| 合集 | 备注 | 剪辑 |")
+        text = self.t.render().replace("| 合集 | 匀素材 |", "| 合集 | 备注 | 匀素材 |")
         t = P.ProgressTable.parse(text)
         self.assertIn("备注", t.header)
         t.set_cell("合集一", "剪辑")

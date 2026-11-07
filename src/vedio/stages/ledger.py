@@ -136,27 +136,52 @@ def collect_rows(project: Project, collections: Optional[list[str]] = None
 
         # 成片按编号对齐标题（和 rename 用同一套规则，避免两边理解不一致）
         files = media.list_videos(collection.final)
-        indexed = []
+        by_index: dict[int, Path] = {}
         for p in files:
             idx = rename_stage.episode_index(p)
-            indexed.append((idx if idx is not None else 10_000, p))
-        indexed.sort()
+            if idx is not None:
+                by_index.setdefault(idx, p)
+        unindexed = [p for p in files if rename_stage.episode_index(p) is None]
 
-        if not indexed:
+        if not files:
             problems.append(f"{name}: 成片/ 里没有视频")
             continue
-        if len(indexed) != len(titles):
-            problems.append(f"{name}: 成片 {len(indexed)} 个，标题 {len(titles)} 条")
 
-        durations = [media.probe_duration(project.ffprobe, p) for _, p in indexed]
-        total = round(sum(durations), 1)
+        # **以标题为准**：一个标题一行。
+        #
+        # 为什么不按成片遍历：素材比目标长一点时，剪出来会多一到两个片段
+        # （那是废篇，匀素材环节该处理掉的）。按成片遍历会把废篇也写进台账，
+        # 甲方看到的是"多出来的集"，实际根本没这集内容。
+        # 标题是人定的交付清单，台账就照它写。
+        durations = {idx: media.probe_duration(project.ffprobe, p)
+                     for idx, p in by_index.items()}
+        total = round(sum(durations.values()), 1)
 
-        for i, ((_, path), seconds) in enumerate(zip(indexed, durations)):
-            title = titles[i] if i < len(titles) else path.stem
+        missing: list[int] = []
+        for i, title in enumerate(titles, 1):
+            path = by_index.get(i)
+            if path is None:
+                missing.append(i)
+                continue
             rows.append(LedgerRow(
-                collection=name, episode=i + 1, title=title,
-                seconds=seconds, collection_seconds=total, intro_seconds=intro,
+                collection=name, episode=i, title=title,
+                seconds=durations[i], collection_seconds=total,
+                intro_seconds=intro,
             ))
+
+        # 有标题却找不到成片 —— 这是缺集，必须报
+        if missing:
+            problems.append(f"{name}: 第 {'、'.join(str(i) for i in missing)} "
+                            f"集找不到成片（标题有 {len(titles)} 条）")
+
+        # 有额外成片却没有标题 —— 废篇，不进台账，但要如实说
+        extras = sorted(idx for idx in by_index if idx > len(titles))
+        if extras or unindexed:
+            names = [by_index[i].name for i in extras] + [p.name for p in unindexed]
+            problems.append(f"{name}: {len(names)} 个成片没有对应标题，"
+                            f"未计入台账（废篇，可用 balance 匀素材消掉）："
+                            f"{'、'.join(names[:5])}"
+                            + ("…" if len(names) > 5 else ""))
     return rows, problems
 
 

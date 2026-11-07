@@ -29,10 +29,12 @@ FILE_NAME = "进度.md"
 
 #: 所有环节。顺序即表格列序。
 #:
-#: 「篇名」在「字幕」之后、「导出」之前 —— 这是硬约束，不是排版偏好：
-#: 台账要有篇名才成立，而台账是交付凭证。导出是长流程，等导完、拼完、
-#: 要写台账了才发现没篇名，等于白跑一整轮。
-STAGES: tuple[str, ...] = ("剪辑", "字幕", "篇名", "导出", "拼接", "命名", "台账")
+#: 「匀素材」排在最前 —— 录完就该做。素材比目标多出几分钟时，剪的时候会多切
+#: 出一两段"废篇"，后面每个环节都要为它擦屁股（台账多行、成片多文件）。
+#: 在录制之后、剪辑之前匀掉，是唯一不用返工的位置。
+#:
+#: 「篇名」在「字幕」之后、「导出」之前 —— 台账必须有篇名，导出又是长流程。
+STAGES: tuple[str, ...] = ("匀素材", "剪辑", "字幕", "篇名", "导出", "拼接", "命名", "台账")
 
 #: 空单元格
 EMPTY = "·"
@@ -145,11 +147,13 @@ class ProgressTable:
         if not missing:
             return
         for stage in missing:
-            # 插到它该在的位置：找 STAGES 里排在它前面、且表里已有的那一列
+            # 插到它该在的位置：找 STAGES 里排在它前面、且表里已有的那一列。
+            # 一列都没有（比如「匀素材」排最前）→ 紧跟合集名之后（索引 1），
+            # 不能塞到末尾 —— 那会让流程顺序看起来是"先剪辑再匀素材"。
             order = list(STAGES)
             pos_after = [self.header.index(s) for s in order[:order.index(stage)]
                          if s in self.header]
-            pos = (max(pos_after) + 1) if pos_after else len(self.header)
+            pos = (max(pos_after) + 1) if pos_after else 1
             self.header.insert(pos, stage)
             for row in self.rows:
                 row.insert(pos, EMPTY)
