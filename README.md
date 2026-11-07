@@ -49,16 +49,24 @@ vedio run    --game 我的世界 --batch 2026-12 --collections 合集一,合集�
 
 ### 日志
 
-`{批次}/log/` 下有四种文件：
+`{批次}/log/` 下有五种文件：
 
 | 文件 | 内容 |
 |---|---|
+| `run-{动词}-{时间}.log` | **一次命令调用的全部输出** —— 控制台看到什么它就有什么，连崩溃栈都在 |
 | `events.jsonl` | 结构化事件（一行一个 JSON），`status` 读它 |
 | `{日期}.log` | 同上的中文明文本 |
 | `agent-subtitle-{合集}-{时间}.log` | **字幕 agent 的完整过程**：解析出的主题、知识库命中、模型回复正文、token 消耗 |
+| `agent-{run_id}.jsonl` | 同一过程的结构化版本 |
 | `export-{合集}-{时间}.log` | 剪映控制器的全过程：找控件、等面板、等文件稳定 |
 
-后两类是给"出问题了怎么办"用的 —— 结构化的 `events.jsonl` 只记结果，不记过程。
+**跑完命令会自动打印日志路径**，不用猜。也可以随时：
+
+```powershell
+vedio logs --game 我的世界 --batch 2026-12                    # 列出所有日志
+vedio logs --game 我的世界 --batch 2026-12 --tail 100        # 看最新那个的末尾
+vedio logs --game 我的世界 --batch 2026-12 --collection 合集一
+```
 
 加 `--json` 得到结构化结果；错误带 `error` 码和 `hint`。
 

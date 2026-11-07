@@ -31,3 +31,6 @@ uiautomation>=2.0.0
 json5>=0.9.0
 langgraph>=0.2.0
 pyyaml>=6.0
+# 结构化日志。deal_video_agent/agent/logger.py 直接 import 它 ——
+# 以前没写进这里，靠本机碰巧装了才能跑；换机器 pip install 完就 ImportError。
+structlog>=24.1

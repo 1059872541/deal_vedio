@@ -352,6 +352,20 @@ class TestVerbDispatch(CliCase):
         self.assertEqual(payload["count"], 0)
         self.assertIn("log_dir", payload)
 
+    def test_logs_excludes_its_own_run_log(self):
+        """`vedio logs` 不该把自己这次调用的日志列进来（那是自指的）"""
+        code, out, err = self.run_cli("logs", *self.base(), "--json")
+        payload = json.loads(out)
+        self.assertFalse(any(f["name"].startswith("run-logs-") for f in payload["files"]))
+
+    def test_logs_shows_other_invocations(self):
+        """但别的动词调用留下的 run 日志要能看到"""
+        self.run_cli("paths", *self.base())          # 先制造一个 run-paths-*.log
+        code, out, err = self.run_cli("logs", *self.base(), "--json")
+        payload = json.loads(out)
+        names = [f["name"] for f in payload["files"]]
+        self.assertTrue(any(n.startswith("run-paths-") for n in names), names)
+
     def test_logs_lists_and_tails(self):
         log_dir = self.root / "log"
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -372,6 +386,50 @@ class TestVerbDispatch(CliCase):
         self.assertIn("export-合集一", out)
         self.assertIn("最新在前", out)
 
+    def test_each_invocation_creates_one_run_log(self):
+        """用户要的是"跑一次命令，就有一个文件能看" """
+        code, out, err = self.run_cli("status", *self.base())
+        self.assertEqual(code, 0)
+        logs = list((self.root / "log").glob("run-status-*.log"))
+        self.assertEqual(len(logs), 1, f"实际: {list((self.root / 'log').iterdir())}")
+        text = logs[0].read_text(encoding="utf-8")
+        self.assertIn("📊", text)          # 表格本身也进日志
+        self.assertIn("下一步", text)
+
+    def test_run_log_name_carries_verb_and_time(self):
+        self.run_cli("paths", *self.base())
+        name = next((self.root / "log").glob("run-paths-*.log")).name
+        self.assertRegex(name, r"^run-paths-\d{8}-\d{6}\.log$")
+
+    def test_each_invocation_gets_its_own_file(self):
+        import time
+        self.run_cli("paths", *self.base())
+        time.sleep(1.05)                    # 文件名精确到秒
+        self.run_cli("paths", *self.base())
+        self.assertEqual(len(list((self.root / "log").glob("run-paths-*.log"))), 2)
+
+    def test_crash_leaves_traceback_in_run_log(self):
+        """崩溃的 traceback 是最该留下的东西"""
+        from unittest import mock
+        from vedio.stages import ledger as L
+
+        with mock.patch.object(L, "build_ledger", side_effect=RuntimeError("炸了")):
+            with self.assertRaises(RuntimeError):
+                self.run_cli("ledger", *self.base())
+
+        logs = list((self.root / "log").glob("run-ledger-*.log"))
+        self.assertEqual(len(logs), 1)
+        text = logs[0].read_text(encoding="utf-8")
+        self.assertIn("Traceback", text)
+        self.assertIn("炸了", text)
+
+    def test_init_creates_run_log(self):
+        code, out, err = self.run_cli("init", "--game", "我的世界", "--batch", "2026-13",
+                                      "--collections", "1", "--host", "波波")
+        self.assertEqual(code, 0, err)
+        logs = list((self.tmp / "我的世界-2026-13" / "log").glob("run-init-*.log"))
+        self.assertEqual(len(logs), 1)
+
     def test_log_hint_shown_after_write_verbs(self):
         """人原来会去翻 deal_vedio/logs（空目录），必须主动告诉他日志在哪"""
         code, out, err = self.run_cli("subtitle", *self.base(), "--collections", "合集一")
@@ -380,12 +438,12 @@ class TestVerbDispatch(CliCase):
         self.assertIn("log", out)
         self.assertIn("vedio logs", out)
 
-    def test_log_hint_lists_newest_file(self):
-        log_dir = self.root / "log"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        (log_dir / "agent-subtitle-合集一-20260101-000000.log").write_text("x", encoding="utf-8")
+    def test_log_hint_points_at_this_invocations_run_log(self):
+        """提示里指向的应该是"这次调用"那个文件"""
         code, out, err = self.run_cli("splice", *self.base(), "--collections", "合集一")
-        self.assertIn("agent-subtitle-合集一-20260101-000000.log", out)
+        self.assertIn("日志：", out)
+        self.assertIn("run-splice-", out)
+        self.assertIn("vedio logs", out)
 
     def test_all_verbs_have_help(self):
         """十一个动词都要能加载（防 import 错误）"""

@@ -230,6 +230,16 @@ class StatusCase(unittest.TestCase):
         """标题.md 里没有这个合集 → 未开始，不是失败"""
         self.assertEqual(self.one("合集二").named_ok, None)
 
+    def test_named_none_when_no_final_video(self):
+        """有标题但成片还没生成 → 也是未开始，不能报 ✗"""
+        touch(self.p.batch_dir / "片头" / "intro.mp4")
+        touch(self.p.batch_dir / "片尾" / "outro.mp4")
+        self._ready_export()
+        st = self.one()
+        self.assertEqual(st.final_count, 0)
+        self.assertIsNone(st.named_ok)
+        self.assertEqual(st.named_missing, [])
+
     # ── 台账 ──
 
     def test_ledger_from_events_not_files(self):

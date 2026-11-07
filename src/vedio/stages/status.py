@@ -205,8 +205,10 @@ def collect_collection(project: Project, collection: Collection,
     st.final_count = len(finals)
 
     # ── 命名 ──
+    # 成片一个都没有时是"还没到这一步"，不是"命名错了"。
+    # 否则只要 标题.md 写了标题，这一列就一路红着，误导人以为出问题。
     titles = project.titles_of(collection.name)
-    if titles:
+    if titles and finals:
         names = [f.stem for f in finals]
         missing = [t for t in titles if not any(t in n for n in names)]
         st.named_missing = missing

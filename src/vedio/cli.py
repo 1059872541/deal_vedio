@@ -203,7 +203,9 @@ def cmd_init(args: argparse.Namespace, project: Optional[context.Project]) -> in
         else:
             from .events import EventLog
             log = EventLog(plan.batch_dir / "log")
-            payload = init_stage.apply(plan, log=log)
+            # 和其它动词一样：一次调用留一个 run-*.log
+            with log.capture("run-init"):
+                payload = init_stage.apply(plan, log=log)
     except init_stage.InitError as exc:
         if args.json:
             print(json.dumps(exc.as_dict(), ensure_ascii=False, indent=2), file=sys.stderr)
@@ -224,7 +226,6 @@ def cmd_init(args: argparse.Namespace, project: Optional[context.Project]) -> in
                 lines.append(f"    + {f}")
         else:
             lines.append(f"  新建目录 {p.get('created_dirs', 0)} 个")
-        lines.append("")
         lines.append("下一步：把录屏放进 合集/合集X/素材/，录完跟我说一声。")
         return "\n".join(lines)
 
@@ -422,7 +423,10 @@ def cmd_logs(args: argparse.Namespace, project: context.Project) -> int:
     """看批次日志（只读）"""
     from .events import list_logs, tail_log
 
-    files = list_logs(project.log_dir, args.collection)
+    # 排除本次调用自己的 run 日志：它正在写，而且内容就是你眼前这份列表
+    own = f"run-{args.verb}"
+    files = [f for f in list_logs(project.log_dir, args.collection)
+             if not f.path.name.startswith(own + "-")]
     payload = {
         "log_dir": str(project.log_dir),
         "count": len(files),
@@ -567,6 +571,44 @@ def _ensure_utf8_stdio() -> None:
                 pass
 
 
+def _run_with_log(args: argparse.Namespace, project: context.Project,
+                  handler: Callable) -> int:
+    """把**一次命令调用的全部输出**存成一个文件。
+
+    用户要的是"跑一次命令，就有一个文件能看"，而不是去猜日志散在哪。
+    所以每次调用生成一个：
+
+        {批次}/log/run-{动词}-{时间}.log
+
+    里面包含这次调用印到控制台的**全部**内容 —— 包括 stage 内部那些
+    旧代码的 print、剪映控制器的过程、模型流式回复、最终结果表。
+
+    实现方式是最外层的 `EventLog.capture()`：它把 stdout/stderr 换成 tee，
+    内层 stage 自己的 capture 会再套一层，于是同一份内容既进
+    `run-*.log`（整次调用），也进 `agent-subtitle-*.log`（单个合集）。
+    多写几 KB，换"永远找得到"。
+    """
+    from .events import EventLog
+
+    try:
+        elog = EventLog(project.log_dir)
+    except OSError:
+        return handler(args, project)          # 日志目录建不了也不能让命令跑不了
+
+    with elog.capture(f"run-{args.verb}"):
+        try:
+            return handler(args, project)
+        except context.ContextError:
+            # 业务错（批次不存在、合集名不对…）由 main 统一转成带 error 码的输出。
+            # 不能在这里打 traceback —— 那会把 --json 的 stderr 弄成"栈 + JSON"，解析不了。
+            raise
+        except Exception:
+            # 意外崩溃的 traceback 是最该留下的东西 —— 在 tee 还生效时打一遍
+            import traceback
+            traceback.print_exc()
+            raise
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     _ensure_utf8_stdio()
     parser = build_parser()
@@ -587,6 +629,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             return _fail(exc.code, exc.message, as_json, **exc.detail)
 
     try:
+        if project is not None:
+            return _run_with_log(args, project, handler)
         return handler(args, project)
     except context.ContextError as exc:
         return _fail(exc.code, exc.message, as_json, **exc.detail)
