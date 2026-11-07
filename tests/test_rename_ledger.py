@@ -223,28 +223,39 @@ class TestLedger(Base):
         self.assertEqual(rows, [])
         self.assertTrue(any("合集二" in p for p in problems))
 
-    def test_write_and_read_back(self):
+    def setUp(self):
+        super().setUp()
+        # 真正的 xlsx 由 conf/本机.yaml 指定的外部脚本生成（机器相关）。
+        # 单测只验"数据对不对、行为对不对"，所以把写盘替身掉。
+        patcher = mock.patch.object(L, "write_workbook", side_effect=self._fake_write)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _fake_write(self, path, rows, project):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_bytes(b"xlsx")
+
+    def test_payload_shape(self):
+        """交给外部脚本的 JSON 结构要对：合集名 + 每集「第X集 标题」"""
         self.prep()
         result = L.build_ledger(self.p, ["合集一"], log=self.log)
         self.assertEqual(result.status, "done")
-        self.assertEqual(result.rows, 3)
+        rows, problems = L.collect_rows(self.p, ["合集一"])
+        payload = L._collections_payload(rows, self.p)
+        self.assertEqual(len(payload), 1)
+        col = payload[0]
+        self.assertEqual(col["series_title"], "波波之我的世界 收集强力变身-上篇")
+        self.assertEqual(col["video_count"], 3)
+        self.assertEqual(col["videos"][0]["filename"], "第一集 林中小屋初探")
+        self.assertEqual(col["videos"][0]["episode_num"], 1)
+        self.assertIsInstance(col["videos"][0]["duration"], int)
+        self.assertIsInstance(col["total_duration"], int)
 
-        from openpyxl import load_workbook
-        wb = load_workbook(str(result.path))
-        ws = wb.active
-        header = [c.value for c in ws[1]]
-        self.assertEqual(header, L.COLUMNS)
-
-        first = [c.value for c in ws[2]]
-        self.assertEqual(first[0], "波波之我的世界 收集强力变身-上篇")   # A
-        self.assertEqual(first[1], "林中小屋初探")   # B 精彩看点 = 该集标题
-        self.assertAlmostEqual(first[2], 401.0)                         # C
-        self.assertAlmostEqual(first[4], 30.0)                          # E
-        self.assertAlmostEqual(first[5], 371.0)                         # F
-        self.assertEqual(first[6], "波波")                              # G
-        self.assertEqual(first[7], "端游")                              # H
-        self.assertEqual(first[8], 1)                                   # I
-        self.assertEqual(first[9], 2026)                                # J
+    def test_output_named_for_delivery(self):
+        """文件名按交付规范：26年{主播}{月}月第一批片单.xlsx"""
+        target = L.ledger_target(self.p, month=12)
+        self.assertEqual(target.name, "26年波波12月第一批片单.xlsx")
+        self.assertEqual(target.parent.name, "2026")
 
     def test_existing_file_skipped(self):
         self.prep()

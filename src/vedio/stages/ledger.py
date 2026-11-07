@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import sys
+import time
 from typing import Any, Optional
 
 from .. import media
@@ -187,36 +189,112 @@ def collect_rows(project: Project, collections: Optional[list[str]] = None
 
 # ─────────────────────────── 写 Excel ───────────────────────────
 
-def write_workbook(path: Path, rows: list[LedgerRow], project: Project) -> None:
-    """写 xlsx。用 openpyxl（已在依赖里）。"""
-    from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Font
+def _load_excel_generator(path: Path):
+    """加载外部片单生成脚本（`conf/本机.yaml` 的 `paths.excel_generator`）。
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "台账"
+    为什么不自带实现：那份脚本的格式（汇总行、纵向合并、红/黑配色、边框）
+    是用户验证过的稳定版本，重写一遍只会引入差异。
+    """
+    import importlib.util
 
-    ws.append(COLUMNS)
-    for cell in ws[1]:
-        cell.font = Font(bold=True)
-        cell.alignment = Alignment(horizontal="center")
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"片单生成脚本不存在：{path}\n"
+            f"请在 conf/本机.yaml 的 paths.excel_generator 里填对路径"
+        )
+    name = "vedio_excel_generator"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)      # type: ignore[union-attr]
+    return module
 
-    host = project.host
-    category = str(project.rule("meta.category", "") or "")
-    year = project.rule("meta.year", "")
 
+def _collections_payload(rows: list[LedgerRow], project: Project) -> list[dict[str, Any]]:
+    """把台账行整理成生成脚本要的 JSON。
+
+    它需要 `第X集 标题` 这种形态的 `filename`，所以这里用和 `rename`
+    同一套命名（避免文件名和台账两处不一致）。
+    """
+    from . import rename as rename_stage
+
+    by_collection: dict[str, list[LedgerRow]] = {}
     for row in rows:
-        collection_name = project.titles.full_collection_name(row.collection) or row.collection
-        ws.append(row.as_list(collection_name=collection_name, host=host,
-                              category=category, year=year))
+        by_collection.setdefault(row.collection, []).append(row)
 
-    widths = [30, 14, 10, 10, 10, 10, 8, 8, 8, 8, 24, 16]
-    for i, w in enumerate(widths, 1):
-        ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = w
-    ws.freeze_panes = "A2"
+    payload: list[dict[str, Any]] = []
+    for name, items in by_collection.items():
+        items.sort(key=lambda r: r.episode)
+        full = project.titles.full_collection_name(name) or name
+        payload.append({
+            "series_title": full,
+            "video_count": len(items),
+            # **必须整数**：生成脚本里有 f'{minutes:02d}:{seconds:02d}'，
+            # 传 float 会直接 ValueError（实测踩过）
+            "total_duration": int(round(sum(r.seconds for r in items))),
+            "videos": [
+                {
+                    "filename": f"{rename_stage.episode_label(r.episode)} {r.title}",
+                    "episode_num": r.episode,
+                    "duration": int(round(r.seconds)),
+                }
+                for r in items
+            ],
+        })
+    return payload
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(str(path))
+
+def ledger_target(project: Project, month: int | None = None) -> Path:
+    """交付用的台账路径：`{ledger_root}/{year}/26年{host}{month}月第一批片单.xlsx`。
+
+    台账是**交付物**，不属于某个批次 —— 同一个月几批共用一份命名规则。
+
+    **不做自动改名**（`_1`、`_2` 那种）：那样每跑一次夜里任务就多一份表，
+    人还得自己去分辨哪份是最终版。存在就跳过，要重写就 `--force`。
+    """
+    local = getattr(project, "local", None)
+    root = getattr(local, "ledger_root", None) or (project.batch_dir / "台账")
+    year = int(project.rule("meta.year", 2026) or 2026)
+    host = project.host or ""
+    month = month or int(time.strftime("%m"))
+    return Path(root) / str(year) / f"{year % 100}年{host}{month}月第一批片单.xlsx"
+
+
+def write_workbook(path: Path, rows: list[LedgerRow], project: Project) -> None:
+    """写 xlsx —— 交给外部稳定脚本，不在本仓库里重实现格式。"""
+    import json
+    import tempfile
+
+    local = getattr(project, "local", None)
+    generator = getattr(local, "excel_generator", None)
+    if generator is None:
+        raise FileNotFoundError(
+            "没有配置片单生成脚本（conf/本机.yaml 的 paths.excel_generator）")
+
+    module = _load_excel_generator(Path(generator))
+    payload = _collections_payload(rows, project)
+
+    intro = 0.0
+    if rows:
+        intro = rows[0].intro_seconds
+    tmp = Path(tempfile.mkdtemp()) / "ledger.json"
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        module.generate_excel_from_json(
+            str(tmp), str(path),
+            host=project.host or "",
+            category=str(project.rule("meta.category", "") or ""),
+            year=project.rule("meta.year", 2026),
+            intro_duration=int(round(intro)),
+        )
+    finally:
+        try:
+            tmp.unlink()
+            tmp.parent.rmdir()
+        except OSError:
+            pass
 
 
 def build_ledger(project: Project, collections: Optional[list[str]] = None, *,
@@ -226,7 +304,7 @@ def build_ledger(project: Project, collections: Optional[list[str]] = None, *,
     if log is None:
         log = EventLog(project.log_dir)
 
-    out = project.ledger_file
+    out = ledger_target(project)
     if out.is_file() and not force:
         log.emit("ledger", "skip", reason="already_done", file=out.name)
         return LedgerResult("skip", path=out, message=f"{out.name} 已存在（--force 可重写）")
@@ -259,6 +337,11 @@ def build_ledger(project: Project, collections: Optional[list[str]] = None, *,
 
     try:
         write_workbook(out, rows, project)
+    except PermissionError:
+        message = (f"写不进去：{out.name} 正被其他程序占用（大概是 Excel 开着）。"
+                   f"关掉它再跑。")
+        log.emit("ledger", FAIL, error="file_locked", message=message, file=str(out))
+        return LedgerResult("fail", error="file_locked", message=message)
     except Exception as exc:                 # noqa: BLE001
         log.emit("ledger", FAIL, error=type(exc).__name__, message=str(exc))
         return LedgerResult("fail", error=type(exc).__name__, message=str(exc))

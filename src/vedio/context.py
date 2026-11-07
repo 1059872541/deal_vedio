@@ -126,6 +126,10 @@ class LocalConfig:
     ffmpeg: str = "ffmpeg"
     ffprobe: str = "ffprobe"
     window_title: str = "剪映专业版"
+    #: 台账（片单）输出根目录。台账是交付物，不属于某个批次，单独放
+    ledger_root: Path | None = None
+    #: 片单 Excel 生成脚本（稳定的外部实现，见 conf/本机.yaml 注释）
+    excel_generator: Path | None = None
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "LocalConfig":
@@ -148,13 +152,18 @@ class LocalConfig:
             )
         jy = data.get("jianying") or {}
         tool = data.get("tool") or {}
+        paths = data.get("paths") or {}
         draft = (jy.get("draft_dir") or "").strip()
+        ledger_root = (paths.get("ledger_root") or "").strip()
+        excel_gen = (paths.get("excel_generator") or "").strip()
         return cls(
             workspace_root=Path(ws),
             draft_dir=Path(draft) if draft else None,
             ffmpeg=str(tool.get("ffmpeg") or "ffmpeg"),
             ffprobe=str(tool.get("ffprobe") or "ffprobe"),
             window_title=str(jy.get("window_title") or "剪映专业版"),
+            ledger_root=Path(ledger_root) if ledger_root else None,
+            excel_generator=Path(excel_gen) if excel_gen else None,
         )
 
 
@@ -871,6 +880,11 @@ class Project:
     def ffmpeg(self) -> str:
         """ffmpeg 命令名或路径（来自 conf/本机.yaml）"""
         return self._local.ffmpeg
+
+    @property
+    def local(self) -> "LocalConfig":
+        """机器配置（台账输出目录、片单生成脚本等都在这里）"""
+        return self._local
 
     @property
     def ffprobe(self) -> str:

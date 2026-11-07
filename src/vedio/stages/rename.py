@@ -77,6 +77,11 @@ _INDEX_RE = re.compile(r"-(\d+)$")
 _CN_EPISODE_RE = re.compile(r"第([一二三四五六七八九十百]+)集")
 
 
+def episode_label(index: int) -> str:
+    """`3` → `第三集`。台账的「精彩看点」写成「第三集 标题」用。"""
+    return f"第{TextUtils.number_to_chinese(index)}集"
+
+
 def episode_index(path: Path) -> Optional[int]:
     """从文件名取集号。
 
