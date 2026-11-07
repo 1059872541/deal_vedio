@@ -183,10 +183,25 @@ class TestDiskSpace(unittest.TestCase):
         intro.write_bytes(b"y" * 10_000)
         outro = self.dir / "outro.mp4"
         outro.write_bytes(b"z" * 5_000)
-        segs = [object()] * 4        # 只用到 len()
+        segs = [mock.Mock(duration=25.0)] * 4        # 4 段 × 25 秒 = 100 秒
         needed = SP.estimate_space(source, segs, intro, outro)
-        self.assertGreater(needed, 2_000_000)            # 含片头片尾
-        self.assertLess(needed, 2_600_000)               # 不该离谱
+        # 成片 ≈ 源 1MB + 片头片尾 15KB × 4 = 1.06MB；切片只多一段 0.25MB；×1.15
+        self.assertGreater(needed, 1_100_000)
+        self.assertLess(needed, 1_800_000)
+
+    def test_estimate_does_not_double_count_source(self):
+        """切片是逐段删的，不该按「源 × 2」估 —— 那会把能跑的拼接拒掉"""
+        source = self.dir / "long.mp4"
+        source.write_bytes(b"x" * 10_000_000)
+        intro = self.dir / "intro.mp4"
+        intro.write_bytes(b"y" * 1_000)
+        outro = self.dir / "outro.mp4"
+        outro.write_bytes(b"z" * 1_000)
+        segs = [mock.Mock(duration=10.0)] * 20       # 20 段 × 10 秒 = 200 秒
+        needed = SP.estimate_space(source, segs, intro, outro)
+        # 10MB 源 + 片头片尾 2KB×20 + 最大一段 0.5MB，×1.15 ≈ 12.07MB
+        self.assertLess(needed, 13_000_000)
+        self.assertGreater(needed, 10_000_000)       # 但至少覆盖源本身
 
     def test_check_space_not_enough(self):
         with mock.patch("shutil.disk_usage") as usage:

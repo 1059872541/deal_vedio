@@ -466,11 +466,12 @@ def estimate_space(source: Path, segments: Sequence[Segment],
                   intro: Path, outro: Path) -> int:
     """估算这次拼接要写多少字节。
 
-    算法故意保守（宁可估大）：
-    - 切片：`-c copy` 不重编码，总量 ≈ 源文件大小
-    - 成片：每集 = 片头 + 该段 + 片尾，总量 ≈ 源文件 + 集数 ×（片头 + 片尾）
+    - **成片**：每集 = 片头 + 该段 + 片尾，总量 ≈ 源大小 + 集数 ×（片头 + 片尾）
+    - **切片**：逐段生成、拼完一集立刻删（`keep_segments=False`），
+      所以同时只多占**最大那一段**，不是源大小的又一份
 
-    这两份是**同时存在**的（切片在拼完一集后才删），所以加起来。
+    早期版本按「源 × 2」估，把同时最多 1 段的临时文件当成整体多一份，
+    对 2 小时素材会高估近一倍 —— 高估会让本来跑得动的拼接被拒。
     """
     try:
         source_size = source.stat().st_size
@@ -480,7 +481,11 @@ def estimate_space(source: Path, segments: Sequence[Segment],
         tpl_size = intro.stat().st_size + outro.stat().st_size
     except OSError:
         tpl_size = 0
-    return int((source_size * 2 + tpl_size * len(segments)) * SPACE_HEADROOM)
+    largest = max((s.duration for s in segments), default=0.0)
+    total_dur = max(sum(s.duration for s in segments), 1.0)
+    # 最大那一段占源文件的比例
+    one_segment = int(source_size * (largest / total_dur)) if total_dur else 0
+    return int((source_size + tpl_size * len(segments) + one_segment) * SPACE_HEADROOM)
 
 
 def check_space(target_dir: Path, needed: int) -> tuple[bool, int]:
