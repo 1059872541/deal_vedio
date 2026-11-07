@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .. import media
+from .. import progress
 from ..context import Collection, Project
 from ..events import DONE, FAIL, SKIP, EventLog
 
@@ -189,6 +190,7 @@ def rename_collection(project: Project, collection: Collection, *,
     if not plan:
         if log is not None:
             log.emit("rename", SKIP, name, reason="already_named", checked=len(finals))
+        progress.record(project, name, "命名")
         return RenameResult(name, "skip",
                             message=f"{len(finals)} 个成片名字已经对了")
 
@@ -213,6 +215,7 @@ def rename_collection(project: Project, collection: Collection, *,
 
     if log is not None:
         log.emit("rename", DONE, name, count=len(plan), names=[b for _, b in renamed])
+    progress.record(project, name, "命名")
     return RenameResult(name, "done", renamed=renamed,
                         message=f"改名 {len(plan)} 个")
 

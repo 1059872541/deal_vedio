@@ -214,5 +214,71 @@ class TestAddCollections(TempCase):
         self.assertEqual(P.ProgressTable.load(self.path).cell("合集一", "字幕"), P.DONE)
 
 
+class TestRecord(TempCase):
+    """`record()` 是各 stage 成功后调的那一个函数 —— 它**永不抛异常**。"""
+
+    class FakeProject:
+        def __init__(self, root: Path, names=("合集一", "合集二"), ignored=None):
+            self.batch_dir = Path(root)
+            self.name = "我的世界-2026-12"
+            self._names = list(names)
+            self._ignored = list(ignored or [])
+
+        def collection_names(self):
+            return self._names
+
+        def ignored_collections(self):
+            return self._ignored
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.FakeProject(self.tmp)
+
+    def table(self):
+        return P.ProgressTable.load(self.tmp / P.FILE_NAME)
+
+    def test_marks_stage(self):
+        self.assertTrue(P.record(self.project, "合集一", "字幕"))
+        self.assertEqual(self.table().cell("合集一", "字幕"), P.DONE)
+
+    def test_second_call_is_noop(self):
+        P.record(self.project, "合集一", "字幕")
+        self.assertFalse(P.record(self.project, "合集一", "字幕"))
+
+    def test_creates_table_when_missing(self):
+        P.record(self.project, "合集一", "剪辑")
+        self.assertEqual(self.table().collections(), ["合集一", "合集二"])
+
+    def test_rebuilds_broken_table_with_backup(self):
+        (self.tmp / P.FILE_NAME).write_text("坏的\n", encoding="utf-8")
+        self.assertTrue(P.record(self.project, "合集一", "字幕"))
+        self.assertTrue((self.tmp / (P.FILE_NAME + ".bak")).is_file())
+        self.assertEqual(self.table().cell("合集一", "字幕"), P.DONE)
+
+    def test_unknown_stage_does_not_raise(self):
+        """表头少一列也不能把一次成功的导出搞成失败"""
+        P.write_initial(self.tmp, "我的世界-2026-12", ["合集一"])
+        raw = (self.tmp / P.FILE_NAME).read_text(encoding="utf-8")
+        (self.tmp / P.FILE_NAME).write_text(
+            raw.replace("| 合集 | 剪辑 |", "| 合集 | 备注 |"), encoding="utf-8")
+        self.assertFalse(P.record(self.project, "合集一", "剪辑"))
+
+    def test_bad_project_does_not_raise(self):
+        class Broken:
+            pass
+        self.assertFalse(P.record(Broken(), "合集一", "字幕"))
+
+    def test_ledger_value_is_written(self):
+        P.record(self.project, "合集一", "台账", "台账-01.xlsx")
+        self.assertEqual(self.table().cell("合集一", "台账"), "台账-01.xlsx")
+
+    def test_ignored_section_survives(self):
+        project = self.FakeProject(self.tmp, ignored=["合集三"])
+        P.record(project, "合集一", "字幕")
+        text = (self.tmp / P.FILE_NAME).read_text(encoding="utf-8")
+        self.assertIn("已忽略", text)
+        self.assertIn("合集三", text)
+
+
 if __name__ == "__main__":
     unittest.main()

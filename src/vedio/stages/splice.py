@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 from .. import context, media
+from .. import progress
 from ..context import Collection, Project
 from ..events import DONE, FAIL, SKIP, EventLog
 
@@ -289,6 +290,7 @@ def splice_collection(project: Project, collection: Collection, *,
         if log is not None:
             log.emit("splice", SKIP, name, reason="already_done",
                      finals=len(existing), expected=len(segments))
+        progress.record(project, name, "拼接")
         return SpliceResult(name, "skip", segments=len(segments),
                             outputs=[p.name for p in existing],
                             message=f"成片/ 里已有 {len(existing)} 个，跳过")
@@ -343,6 +345,7 @@ def splice_collection(project: Project, collection: Collection, *,
     if log is not None:
         log.emit("splice", DONE, name, seconds=round(elapsed, 1), mode=mode,
                  outputs=len(outputs), warnings=warnings)
+    progress.record(project, name, "拼接")
     return SpliceResult(name, "done", segments=len(segments), outputs=outputs,
                         mode=mode, seconds=elapsed,
                         message=f"{len(outputs)} 个成片（{mode}，{media.hhmmss(elapsed)}）")

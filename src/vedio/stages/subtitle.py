@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from .. import subtitles
+from .. import progress, subtitles
 from ..context import Collection, Project
 from ..events import DONE, FAIL, SKIP, EventLog
 
@@ -318,6 +318,16 @@ def patch(project: Project, collection: Collection, *, log: Optional[EventLog] =
 
 # ─────────────────────────── 串起来 ───────────────────────────
 
+#: 哪一步成功了，对应进度表里哪几个格子打勾
+#: - 加行号成功 = 剪映已经导出过 .txt/.srt，也就意味着剪辑完成
+#: - 纠错 / 回写成功 = 字幕这一步完成
+_PROGRESS_BY_STEP = {
+    "number": ("剪辑",),
+    "correct": ("字幕",),
+    "patch": ("字幕",),
+}
+
+
 def run(project: Project, collection: Collection, steps: Optional[list[str]] = None,
         *, log: Optional[EventLog] = None, runner: Optional[Runner] = None,
         prompt: Optional[str] = None, force: bool = False) -> list[SubtitleResult]:
@@ -337,6 +347,9 @@ def run(project: Project, collection: Collection, steps: Optional[list[str]] = N
         else:
             raise ValueError(f"未知字幕步骤：{step}")
         results.append(r)
-        if not r.ok:
+        if r.ok:
+            for stage in _PROGRESS_BY_STEP.get(step, ()):
+                progress.record(project, collection.name, stage)
+        else:
             break
     return results

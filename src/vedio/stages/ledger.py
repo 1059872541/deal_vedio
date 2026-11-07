@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .. import media
+from .. import progress
 from ..context import Collection, Project
 from ..events import DONE, FAIL, EventLog
 from . import rename as rename_stage
@@ -225,6 +226,9 @@ def build_ledger(project: Project, collections: Optional[list[str]] = None, *,
     involved = sorted({r.collection for r in rows})
     log.emit("ledger", DONE, rows=len(rows), collections=involved, file=out.name,
              warnings=problems)
+    # 台账那一列写文件名 —— 这是唯一"文件里推不出来"的事实，必须记下来
+    for name in involved:
+        progress.record(project, name, "台账", out.name)
     return LedgerResult("done", path=out, collections=involved, rows=len(rows),
                         message=f"{len(rows)} 行 / {len(involved)} 个合集"
                                 + ("（有警告）" if problems else ""))

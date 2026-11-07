@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .. import context, media
+from .. import progress
 from ..context import Collection, Project
 from ..events import DONE, FAIL, SKIP, EventLog
 
@@ -209,6 +210,7 @@ def export_collection(project: Project, collection: Collection, controller=None,
             if log is not None:
                 log.emit("export", SKIP, name, reason="already_exported",
                          file=path.name, seconds=round(seconds, 1))
+            progress.record(project, name, "导出")
             return ExportResult(collection=name, status="skip", draft=draft,
                                 target=path, seconds=seconds,
                                 message=f"剪辑/ 里已有 {path.name}（{media.hhmmss(seconds)}）")
@@ -291,6 +293,7 @@ def export_collection(project: Project, collection: Collection, controller=None,
         # 不判失败：片子确实导出来了，只是参数存疑。但要大声说，
         # 别让人以为"成功"就一定对。
         message += "；⚠ 参数与配置不符：" + "；".join(warnings)
+    progress.record(project, name, "导出")
     return ExportResult(collection=name, status="done", draft=draft,
                         target=path, seconds=elapsed, message=message)
 

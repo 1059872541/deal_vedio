@@ -230,6 +230,60 @@ class ProgressTable:
 
 # ─────────────────────────── 便捷函数 ───────────────────────────
 
+def record(project: Any, collection: str, stage: str, value: str = DONE) -> bool:
+    """给某个合集的某个环节打勾 —— 各 stage 跑成功后调它。
+
+    **永不抛异常**：进度表坏了不该让一次成功的导出变成失败。真出问题时
+    把原表备份成 `.bak` 重建，并如实返回 False。
+
+    Args:
+        project: `vedio.context.Project`（鸭子类型，只用 batch_dir / name /
+                 collection_names / ignored_collections 四个属性）
+        collection: 合集名
+        stage: 环节名（必须是表头里有的列）
+        value: 打的值，默认 `✓`；台账那列传文件名
+
+    Returns:
+        True = 真的改了；False = 没变 / 表格有问题 / 传参不对
+    """
+    try:
+        path = Path(project.batch_dir) / FILE_NAME
+        batch_name = project.name
+        names = project.collection_names()
+        ignored = project.ignored_collections()
+    except Exception:
+        return False
+
+    try:
+        table = ProgressTable.load(path)
+    except FileNotFoundError:
+        table = None
+    except (ProgressFormatError, OSError, UnicodeDecodeError):
+        # 表坏了：备份 + 重建，然后把所有已知合集补回去
+        Backup = path.with_name(path.name + ".bak")
+        try:
+            Backup.write_bytes(path.read_bytes())
+        except OSError:
+            pass
+        table = None
+
+    if table is None:
+        try:
+            table = ProgressTable.create(batch_name, names, ignored)
+        except Exception:
+            return False
+
+    try:
+        changed = table.set_cell(collection, stage, value)
+    except (ProgressFormatError, Exception):      # noqa: BLE001
+        return False
+    try:
+        table.save(path)
+    except OSError:
+        return False
+    return changed
+
+
 def write_initial(batch_dir: Path, batch_name: str, collections: list[str],
                   ignored: Optional[list[str]] = None) -> Path:
     """建批次时生成一张空表（全部 `·`）。"""
