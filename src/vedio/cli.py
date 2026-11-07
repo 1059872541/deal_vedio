@@ -257,8 +257,9 @@ def cmd_export(args: argparse.Namespace, project: context.Project) -> int:
                                       f"只剩 {space.gb(report['free'])}"}
                 print(json.dumps(payload, ensure_ascii=False, indent=2), file=_result_err())
             else:
-                print("磁盘空间不够，先不导出（否则导完也拼不了）：\n" + text, file=_result_err())
-                print("  打算先导出、之后再腾空间 → 加 --ignore-space", file=_result_err())
+                print("磁盘空间不足，**已阻止导出**：\n" + text, file=_result_err())
+                print(f"\n  清理 {report.get('drive', '目标盘')} 的空间后重跑；"
+                      f"打算先导出、之后再腾空间 → 加 --ignore-space", file=_result_err())
             return EXIT_FAIL
         if report is not None and not args.json:
             # 够也要说出来 —— 否则"预检到底跑没跑"只能靠猜
@@ -503,7 +504,8 @@ def cmd_run(args: argparse.Namespace, project: context.Project) -> int:
                                   f"只剩 {space.gb(report['free'])}"}
             print(json.dumps(payload, ensure_ascii=False, indent=2), file=_result_err())
         else:
-            print("磁盘空间不够，这一轮不开跑：\n" + text, file=_result_err())
+            print("磁盘空间不足，**这一轮没有开始**：\n" + text, file=_result_err())
+            print(f"\n  清理 {report.get('drive', '目标盘')} 的空间后重跑。", file=_result_err())
         return EXIT_FAIL
 
     try:

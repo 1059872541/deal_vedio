@@ -127,6 +127,7 @@ def project_batch(project: context.Project,
         "free": free,
         "enough": enough,
         "short": short,
+        "drive": f"{Path(project.batch_dir).drive}",
     }
 
 
@@ -134,19 +135,45 @@ def gb(n: int) -> str:
     return f"{n / 1024 ** 3:.1f} GB"
 
 
+#: 环节的中文名（给人看的账目表）
+STAGE_LABELS = {
+    "export": "导出",
+    "splice": "分割拼接",
+    "rename": "重命名",
+    "ledger": "台账",
+}
+
+
 def render(report: dict[str, Any]) -> str:
-    """人话版：一眼看出哪一步吃空间、还差多少"""
-    lines = [f"整轮空间预估（{' / '.join(report['steps'])}）"]
+    """人话账目：每步占多少、剩多少、够不够、不够差多少。
+
+    刻意按**环节**汇总而不是按合集 —— 用户要判断的是"这一轮还能不能跑"，
+    不是"合集二比合集一多占 0.1 GB"。
+
+    用「标签：值」而不是对齐的表格：中文是双宽字符，靠空格对齐换个字体就会歪。
+    账目要一眼看懂，不能赌终端排版。
+    """
+    names = [row["name"] for row in report["collections"]]
+    lines = [f"空间预估（{'、'.join(names) or '无合集'}）"]
+
+    by_stage: dict[str, int] = {}
     for row in report["collections"]:
-        detail = "、".join(
-            f"{stage} {gb(size)}" for stage, size in row["stages"].items() if size
-        )
-        lines.append(f"  {row['name']}：{gb(row['total'])}" + (f"（{detail}）" if detail else ""))
-    lines.append(f"  合计需要 {gb(report['total'])}")
+        for stage, size in row["stages"].items():
+            by_stage[stage] = by_stage.get(stage, 0) + size
+    for stage in report["steps"]:
+        label = STAGE_LABELS.get(stage, stage)
+        lines.append(f"  {label}：{gb(by_stage.get(stage, 0))}")
+
+    lines.append("  " + "─" * 22)
+    lines.append(f"  合计：{gb(report['total'])}")
     if report["free"] < 0:
-        lines.append("  目标盘剩余：查不到（跳过判断）")
-    elif report["enough"]:
-        lines.append(f"  目标盘剩余 {gb(report['free'])} ✅ 够")
+        lines.append("  当前剩余：查不到（跳过判断）")
+        return "\n".join(lines)
+    lines.append(f"  当前剩余：{gb(report['free'])}")
+
+    if report["enough"]:
+        lines.append(f"  ✅ 够，可以开始（还余 {gb(report['free'] - report['total'])}）")
     else:
-        lines.append(f"  目标盘剩余 {gb(report['free'])} ❌ 还差 {gb(report['short'])}")
+        lines.append(f"  ❌ 不够，还差 {gb(report['short'])}")
+        lines.append(f"     请清理 {report.get('drive', '目标盘')} 的空间后重试")
     return "\n".join(lines)
