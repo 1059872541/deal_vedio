@@ -132,6 +132,22 @@ class ControlFinder:
         return matcher
 
 
+def jianying_running() -> bool:
+    """剪映是否正在运行（只看主窗口在不在）。
+
+    用途：导出是长流程，**开跑前**就该确认剪映开着 —— 否则要等空间算完、
+    走到控制器构造才发现，白白让人等一轮。
+    只判断"在不在"，不管它停在首页还是编辑器：`switch_to_home()` 会处理后者。
+    """
+    try:
+        for window in uia.GetRootControl().GetChildren():
+            if (window.Name or "") == "剪映专业版":
+                return True
+    except Exception:
+        pass
+    return False
+
+
 class JianyingController:
     """剪映控制器"""
 

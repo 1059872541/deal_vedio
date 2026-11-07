@@ -268,7 +268,8 @@ class TestVerbDispatch(CliCase):
 
     def test_export_without_draft_registration(self):
         """草稿没登记 → 直接报错，不该去碰剪映"""
-        code, out, err = self.run_cli("export", *self.base(), "--json")
+        with mock.patch.object(cli, "_jianying_ready", return_value=True):
+            code, out, err = self.run_cli("export", *self.base(), "--json")
         self.assertEqual(code, cli.EXIT_FAIL)
         payload = json.loads(out)
         self.assertFalse(payload["ok"])
@@ -483,11 +484,28 @@ class TestVerbDispatch(CliCase):
         repo = {"steps": ["export", "splice"], "collections": [],
                 "total": 10 * 1024 ** 3, "free": 1 * 1024 ** 3,
                 "enough": False, "short": 9 * 1024 ** 3}
-        with mock.patch("vedio.space.project_batch", return_value=repo):
+        with mock.patch.object(cli, "_jianying_ready", return_value=True), \
+             mock.patch("vedio.space.project_batch", return_value=repo):
             code, out, err = self.run_cli("export", *self.base(),
                                           "--collections", "合集一", "--json")
         self.assertEqual(code, cli.EXIT_FAIL)
         self.assertEqual(json.loads(err)["error"], "disk_full")
+
+    def test_export_reminds_when_jianying_closed(self):
+        """剪映没开 → 第一句话就提醒打开它，不往下走（也不算空间）"""
+        with mock.patch("jianying_export.jianying_running", return_value=False):
+            code, out, err = self.run_cli("export", *self.base(), "--json")
+        self.assertEqual(code, cli.EXIT_FAIL)
+        self.assertEqual(json.loads(err)["error"], "jianying_not_running")
+        self.assertIn("剪映", err)
+
+    def test_jianying_check_comes_before_space(self):
+        """顺序：先提醒开剪映，再算空间 —— 剪映没开时不该出现空间账目"""
+        with mock.patch("jianying_export.jianying_running", return_value=False), \
+             mock.patch("vedio.space.project_batch",
+                        side_effect=AssertionError("不该算空间")):
+            code, out, err = self.run_cli("export", *self.base(), "--json")
+        self.assertEqual(code, cli.EXIT_FAIL)
 
     def test_export_ignore_space_bypasses(self):
         repo = {"steps": ["export", "splice"], "collections": [],
@@ -502,7 +520,8 @@ class TestVerbDispatch(CliCase):
     def test_run_refuses_when_space_short(self):
         repo = {"steps": ["export"], "collections": [], "total": 10 * 1024 ** 3,
                 "free": 1, "enough": False, "short": 10 * 1024 ** 3}
-        with mock.patch("vedio.space.project_batch", return_value=repo):
+        with mock.patch.object(cli, "_jianying_ready", return_value=True), \
+             mock.patch("vedio.space.project_batch", return_value=repo):
             code, out, err = self.run_cli("run", *self.base(),
                                           "--steps", "export", "--json")
         self.assertEqual(code, cli.EXIT_FAIL)

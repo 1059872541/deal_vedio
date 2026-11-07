@@ -14,6 +14,7 @@ IS_WINDOWS = sys.platform == "win32"
 
 if IS_WINDOWS:
     from .controller import JianyingController, ExportResolution, ExportFramerate, ControlFinder
+    from .controller import jianying_running
     from .exceptions import (
         DraftNotFound, AutomationError, ExportTimeout,
         TrackNotFound, AmbiguousTrack, SegmentOverlap,
@@ -22,6 +23,7 @@ if IS_WINDOWS:
 
     __all__ = [
         "JianyingController",
+        "jianying_running",
         "ExportResolution",
         "ExportFramerate",
         "ControlFinder",

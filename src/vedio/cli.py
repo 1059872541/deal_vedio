@@ -232,6 +232,31 @@ def _add_collections(args: argparse.Namespace, init_stage) -> int:
     return EXIT_OK
 
 
+def _jianying_ready(args: argparse.Namespace, verb: str) -> bool:
+    """导出前确认剪映开着。没开就明确告诉人要干什么，别往下走。
+
+    为什么要前置：导出是最慢的一步，等空间算完、走到控制器构造才发现剪映没开，
+    等于让人白等。而且报错要说人话 ——「剪映窗口未找到」不如
+    「请打开剪映专业版，停在首页（草稿列表）」。
+    """
+    try:
+        from jianying_export import jianying_running
+        running = jianying_running()
+    except Exception:
+        return True                      # 检测不了就别拦着
+    if running:
+        return True
+    message = ("剪映没有打开，没法导出。\n"
+               "  请先打开「剪映专业版」，停在首页（草稿列表），再重跑。")
+    if args.json:
+        print(json.dumps({"ok": False, "error": "jianying_not_running",
+                          "message": message}, ensure_ascii=False, indent=2),
+              file=_result_err())
+    else:
+        print(f"⚠ {message}", file=_result_err())
+    return False
+
+
 def cmd_export(args: argparse.Namespace, project: context.Project) -> int:
     """批量导出草稿（会点剪映，耗时最长）"""
     from . import space
@@ -240,7 +265,13 @@ def cmd_export(args: argparse.Namespace, project: context.Project) -> int:
 
     log = EventLog(project.log_dir)
 
-    # ── 导出前把「导出 + 拼接」一起算 ──
+    # ── ① 剪映开着吗 ──
+    # 放在空间预检**前面**：剪映没开的话，算完空间也没法导，
+    # 不如第一句就告诉人该干什么。
+    if not _jianying_ready(args, "导出"):
+        return EXIT_FAIL
+
+    # ── ② 导出前把「导出 + 拼接」一起算 ──
     # 只算导出是不够的：实测导出顺利、花 5 分钟写满 2.8 GB，然后卡在拼接上。
     # 拼接才是吃空间的大头，所以必须一起算 —— 不够就别开始导。
     if not getattr(args, "ignore_space", False):
@@ -488,6 +519,10 @@ def cmd_run(args: argparse.Namespace, project: context.Project) -> int:
 
     steps = _split_list(args.steps)
     log = EventLog(project.log_dir)
+
+    # ① 剪映开着吗（要导出就得先有剪映）
+    if "export" in (steps or []) and not _jianying_ready(args, "导出"):
+        return EXIT_FAIL
 
     # ── 整轮空间预检 ──
     # 各环节自己预检是"各管各的"：导出够、拼接不够 → 先花 5 分钟导出、
