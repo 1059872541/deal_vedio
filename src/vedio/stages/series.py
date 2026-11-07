@@ -259,7 +259,8 @@ def suggest(project: Project, collections: list[str],
                 "error": "titles_missing"}
 
     from .. import context as _ctx
-    system_prompt = _ctx.AgentConfig.load().prompt("series_suggest", SUGGEST_SYSTEM_DEFAULT)
+    system_prompt = _ctx.load_prompt("series_suggest", SUGGEST_SYSTEM_DEFAULT,
+                                     game=project.game)
     if client is None:
         try:
             from deal_video_agent.agent.tools.deepseek_api import DeepSeekClient

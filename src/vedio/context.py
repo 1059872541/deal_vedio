@@ -177,6 +177,38 @@ AGENT_CONFIG_FILE = "agent.yaml"
 DEFAULT_MODEL = "deepseek-flash"
 
 
+#: 提示词目录（进 git，和字幕 agent 共用一套机制）
+PROMPTS_DIR = (Path(__file__).resolve().parent.parent
+                / "deal_video_agent" / "prompts")
+
+
+def load_prompt(name: str, default: str = "", game: str = "") -> str:
+    """读提示词：`prompts/editorial.yaml` → 游戏覆写 → 代码兜底。
+
+    为什么要和字幕 agent 用同一个目录：提示词是**领域知识**，不是机器配置。
+    进 git 才不会丢；支持 `prompts/games/{游戏}.yaml` 覆写，不同游戏才能
+    有不同的口径。`agent.yaml` 只留账号/模型/额度。
+
+    Args:
+        name: 键名（`series_suggest` / `ledger_copy`）
+        default: 配置里没有时的兜底值
+        game: 游戏名（`我的世界`）。有 `prompts/games/{game}.yaml` 且写了同名键
+              时用它整条替换
+    """
+    base = _read_yaml(PROMPTS_DIR / "editorial.yaml") or {}
+    value = base.get(name)
+
+    if game:
+        override = _read_yaml(PROMPTS_DIR / "games" / f"{game}.yaml") or {}
+        if name in override:
+            value = override[name]
+
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return default
+
+
+
 @dataclass(frozen=True)
 class AgentConfig:
     """字幕 agent 的模型与密钥，来自 ``conf/agent.yaml``（gitignored）。
