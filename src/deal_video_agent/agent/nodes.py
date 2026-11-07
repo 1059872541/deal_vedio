@@ -216,6 +216,33 @@ def _clean_game_name(raw_name: str) -> str:
     return re.sub(r'-\d{4}(?:-\d{2})?$', '', raw_name)
 
 
+#: completion 相对 prompt 的倍数上界（实测 2.3，取 2.5 保守）
+COMPLETION_RATIO = 2.5
+
+#: 中文 token 与字符的粗略换算：1 字符 ≈ 1/1.2 token（偏保守，宁可高估）
+CHARS_PER_TOKEN = 1.2
+
+
+def _max_tokens_warning(max_tokens: int, user_prompt: str) -> Optional[str]:
+    """预估额度够不够，不够就返回一句告警，够就返回 None。
+
+    为什么要预估：模型先输出 reasoning_content（内部推理）再输出 content。
+    额度被推理吃光时正文为空，白跑几分钟才报错。提前知道自己该调多少，
+    比事后对着 `completion_tokens=8192` 猜强。
+
+    估算是**粗略**的，宁可高估 —— 多算只会多一句提示，少算会漏掉一次白跑。
+    """
+    if not user_prompt or max_tokens <= 0:
+        return None
+    estimated_prompt = int(len(user_prompt) / CHARS_PER_TOKEN) + 1
+    suggested = int(estimated_prompt * COMPLETION_RATIO)
+    if max_tokens >= suggested:
+        return None
+    return (f"max_tokens={max_tokens} 可能不够：本段 prompt 约 {estimated_prompt} token，"
+            f"按 completion≈{COMPLETION_RATIO}×prompt 计算建议 ≥ {suggested}。"
+            f"若跑完提示「输出被截断」，去 conf/agent.yaml 调大 max_tokens")
+
+
 def _extract_content_topic(prompt: str) -> str:
     """从用户提示词中提取内容主题（兼容旧接口）"""
     # 匹配【】中的内容
@@ -446,6 +473,13 @@ def correct_subtitle(state: SubtitleAgentState) -> SubtitleAgentState:
     
     # 调用 API（使用流式输出，显示进度）
     deepseek = _get_deepseek_client()
+
+    # 额度预检：推理模型的 completion 通常是 prompt 的 2~2.5 倍（实测 2.3）。
+    # 明显不够时提前说，别等跑几分钟再截断 —— 那种白跑最气人。
+    warning = _max_tokens_warning(deepseek.max_tokens, user_prompt)
+    if warning:
+        print(f"[WARNING] {warning}")
+
     try:
         print("开始字幕纠正（流式输出中）...")
 

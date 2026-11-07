@@ -54,11 +54,15 @@ deepseek-v4-pro → deepseek-flash）。改名只改这个文件，不动代码�
 deepseek:
   api_key: "sk-..."
   model: "deepseek-flash"
-  max_tokens: 32768      # 给推理留够额度，小了会"跑完什么都没改"
+  max_tokens: 98304      # 给推理留够额度，小了会"跑完什么都没改"
 ```
 
 模板见 `conf/agent.example.yaml`。环境变量 `deepseek_env_key` / `DEEPSEEK_MODEL`
 可以临时覆盖。
+
+> `max_tokens` 为什么这么大：模型先用推理、再吐正文，额度被推理吃光时正文是空的。
+> 实测 329 行字幕（8.7 KB）在 8192 下必死、32768 能通、2 小时素材（约 50 KB）
+> 按最坏情况外推要 ~71,000，所以取 98304。它是**上限不是预留**，不会多花钱。
 
 ```powershell
 vedio status --game 我的世界 --batch 2026-12

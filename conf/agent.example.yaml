@@ -34,8 +34,21 @@ deepseek:
   model: "deepseek-flash"
 
   # 单次回复的 token 上限。
-  # ⚠ 这个值必须给推理留够额度：模型会先输出 reasoning_content（内部推理），
-  #   推理把额度吃光时 content 就是空的、finish_reason=length。
-  #   实测 329 行字幕在 8192 下会被推理吃光（55 秒，正文 0 字）；
-  #   单行小测试只要 691 token。
-  max_tokens: 32768
+  #
+  # **这是上限，不是预留** —— 模型说完就停，按实际用量计费，给大不浪费钱。
+  # 它必须给推理留够额度：模型先输出 reasoning_content（内部推理），再输出
+  # content（正文）。推理把额度吃光时 content 为空、finish_reason=length，
+  # 表现是"跑了几分钟，字幕一处没改"。
+  #
+  # 实测（deepseek-flash，8.7 KB / 329 行字幕）：
+  #     prompt 5,378 + completion 12,381 = 17,759 token
+  #     max_tokens=8192  → 必死：推理吃光，正文 0 字，55 秒白跑
+  #     max_tokens=32768 → 够用：106 秒，改 18 处
+  #
+  # 2 小时素材约 50 KB。按最坏的线性外推：
+  #     prompt 5,378 × (50/8.7) ≈ 30,900
+  #     completion ≈ 30,900 × 2.3 ≈ 71,000
+  # 取 1.4 倍余量 → 98304。（按幂律拟合只需 ~39,000，这里宁大勿小。）
+  #
+  # 如果还是被截断，报错里会给出实际 completion_tokens，照着调大即可。
+  max_tokens: 98304

@@ -194,6 +194,54 @@ class TestAgentConfig(unittest.TestCase):
             context.AgentConfig.load(p)
 
 
+class TestMaxTokensBudget(unittest.TestCase):
+    """max_tokens 必须给推理留够额度。
+
+    实测背景（deepseek-flash，8.7 KB / 329 行字幕）：
+        prompt 5,378 + completion 12,381 = 17,759
+        max_tokens=8192  → 推理吃光，正文 0 字，55 秒白跑
+        max_tokens=32768 → 通
+    2 小时素材约 50 KB，最坏线性外推 completion ≈ 71,000，取 1.4 倍 → 98304。
+    """
+
+    def test_example_config_is_big_enough_for_two_hours(self):
+        """模板里的值不能被随手调小 —— 调小就是重新引入"白跑几分钟"的坑"""
+        import re
+        text = (REPO / "conf" / "agent.example.yaml").read_text(encoding="utf-8")
+        match = re.search(r"^\s*max_tokens:\s*(\d+)", text, re.MULTILINE)
+        self.assertIsNotNone(match, "模板里应该有 max_tokens")
+        self.assertGreaterEqual(int(match.group(1)), 98304)
+
+    def test_shipped_default_matches_requirement(self):
+        self.assertGreaterEqual(context.AgentConfig().max_tokens, 1)
+        self.assertEqual(D.DEFAULTS["max_tokens"], 8192)   # 兜底值可以小，配置才生效
+
+    def test_warning_when_budget_too_small(self):
+        from deal_video_agent.agent.nodes import _max_tokens_warning
+        warning = _max_tokens_warning(8192, "x" * 9000)
+        self.assertIsNotNone(warning)
+        self.assertIn("8192", warning)
+        self.assertIn("max_tokens", warning)
+
+    def test_no_warning_when_budget_plenty(self):
+        from deal_video_agent.agent.nodes import _max_tokens_warning
+        self.assertIsNone(_max_tokens_warning(98304, "x" * 9000))
+
+    def test_warning_for_huge_prompt(self):
+        """2 小时级别的输入（约 17k 字符）在 32768 下该被提醒"""
+        from deal_video_agent.agent.nodes import _max_tokens_warning
+        self.assertIsNotNone(_max_tokens_warning(32768, "字" * 40000))
+
+    def test_empty_prompt_is_silent(self):
+        from deal_video_agent.agent.nodes import _max_tokens_warning
+        self.assertIsNone(_max_tokens_warning(100, ""))
+
+    def test_real_329_line_prompt_does_not_warn_at_98304(self):
+        """真实 329 行字幕的 prompt 大约 6.3k 字符，98304 下不该告警"""
+        from deal_video_agent.agent.nodes import _max_tokens_warning
+        self.assertIsNone(_max_tokens_warning(98304, "字" * 6300))
+
+
 # ─────────────────────────── 源码里不能再有写死的模型名 ───────────────────────────
 
 class TestNoHardcodedModels(unittest.TestCase):
