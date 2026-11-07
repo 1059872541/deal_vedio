@@ -286,6 +286,33 @@ class TestWaitExportDone(unittest.TestCase):
 
 # ─────────────────────────── 默认上限 ───────────────────────────
 
+class TestEnsureVideo(unittest.TestCase):
+    """剪映的导出面板有四个可选区块，勾错区块会吐出字幕而不是视频。
+
+    这些勾选框在 UIA 里完全不可见（没有 CheckBox / TogglePattern），
+    程序替不了人勾 —— 只能判断产出物对不对，不对就停下来讲清楚。
+    """
+
+    def test_mp4_passes(self):
+        C.JianyingController._ensure_video(Path("a.mp4"))
+        C.JianyingController._ensure_video(Path("A.MOV"))
+
+    def test_subtitle_is_rejected(self):
+        with self.assertRaises(C.AutomationError) as ctx:
+            C.JianyingController._ensure_video(Path("MC-01.srt"))
+        message = str(ctx.exception)
+        self.assertIn("视频导出", message)
+        self.assertIn("剪映会记住", message)
+
+    def test_txt_is_rejected(self):
+        with self.assertRaises(C.AutomationError):
+            C.JianyingController._ensure_video(Path("MC-01.txt"))
+
+    def test_audio_is_rejected(self):
+        with self.assertRaises(C.AutomationError):
+            C.JianyingController._ensure_video(Path("MC-01.mp3"))
+
+
 class TestDefaults(unittest.TestCase):
     def test_ui_timeout_is_180(self):
         """用户定的上限：界面就绪 180 秒"""

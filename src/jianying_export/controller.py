@@ -44,6 +44,9 @@ else:
 from . import exceptions
 from .exceptions import AutomationError, ExportTimeout
 
+#: 认作"视频"的扩展名。导出面板勾错区块时吐出来的 .srt/.txt 要能识别出来。
+VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".mkv", ".flv", ".avi", ".m4v", ".wmv", ".webm"})
+
 #: UIA_FullDescriptionPropertyId —— 剪映把控件语义标识放在这个属性里
 FULL_DESC = 30159
 
@@ -338,20 +341,42 @@ class JianyingController:
         else:
             print(f"剪映默认导出到：{export_path}")
 
-        # ── 4. 设分辨率 ──
-        if resolution is not None:
-            self._choose_option("ExportSharpnessInput", resolution.value, "分辨率")
-
-        # ── 5. 设帧率 ──
-        if framerate is not None:
-            self._choose_option("FrameRateInput", framerate.value, "帧率")
+        # ── 4/5. 设分辨率、帧率（**尽力而为，失败不中断**）──
+        #
+        # 实测 6.0.1：`ExportSharpnessInput` / `FrameRateInput` 这两个锚点能找到、
+        # 也能点开，但**弹出来的选项项在 UIA 里不可见** —— 主窗口整棵控件树只有
+        # 18 个控件，点开下拉后 30 秒也搜不到任何带 "1080P" 字样的控件。
+        # 也就是说这一版根本没法用程序选项。
+        #
+        # 所以改成"能设就设，设不了就大声说一句然后继续"。真正的把关放在
+        # 导出之后：用 ffprobe 读产物实际的分辨率和帧率，和配置对比
+        # （见 vedio/stages/export.py 的 verify）。宁可事后核对，也不要
+        # 因为一个点不到的控件把整个导出卡死。
+        for value, anchor, label in (
+            (resolution, "ExportSharpnessInput", "分辨率"),
+            (framerate, "FrameRateInput", "帧率"),
+        ):
+            if value is None:
+                continue
+            try:
+                self._choose_option(anchor, value.value, label)
+                print(f"{label} 已设为 {value.value}")
+            except AutomationError as exc:
+                print(f"警告：{label}没能自动设置（{exc}）——"
+                      f"将使用剪映当前的设置，导出后会核对实际值")
 
         # ── 6. 点「导出」 ──
-        ok_btn = self.app.TextControl(
-            searchDepth=2, Compare=ControlFinder.desc_matcher("ExportOkBtn", exact=True)
-        )
-        if not ok_btn.Exists(0):
-            raise AutomationError("未在导出窗口中找到导出按钮")
+        # 先刷新窗口状态：设置参数那几步可能点开过下拉，窗口树会变；
+        # 不刷新的话 self.app 可能还停在旧状态上。
+        self._safe_refresh()
+
+        def find_ok():
+            btn = self.app.TextControl(
+                searchDepth=2, Compare=ControlFinder.desc_matcher("ExportOkBtn", exact=True)
+            )
+            return btn if self._clickable(btn) else None
+
+        ok_btn = self._poll(find_ok, "导出按钮", timeout=15.0, interval=0.5)
         ok_btn.Click(simulateMove=False)
 
         # ── 7. 等导出完成 ──
@@ -365,6 +390,7 @@ class JianyingController:
         if output_path is not None:
             src = self._locate_exported(export_path, draft_name)
             dest = self._resolve_dest(src, output_path)
+            self._ensure_video(dest)
             dest.parent.mkdir(parents=True, exist_ok=True)
             if dest.exists():
                 raise AutomationError(f"目标文件已存在，拒绝覆盖：{dest}")
@@ -414,7 +440,17 @@ class JianyingController:
                 return True
             return False
 
-        self._poll(probe, f"{label}选项 {value}", timeout=30.0, interval=0.5)
+        try:
+            self._poll(probe, f"{label}选项 {value}", timeout=30.0, interval=0.5)
+        except Exception:
+            # **必须收尾**：失败时那个下拉还开着，会遮住后面的「导出」按钮，
+            # 让整个导出卡死在一个跟参数无关的地方（实测踩过）。
+            try:
+                uia.SendKeys("{Esc}")
+                time.sleep(0.3)
+            except Exception:
+                pass
+            raise
 
     def _wait_export_done(self, timeout: float) -> None:
         """等导出完成。
@@ -439,6 +475,27 @@ class JianyingController:
             time.sleep(4)
 
     @staticmethod
+    def _ensure_video(path: Path) -> None:
+        """确认导出的是视频，不是字幕/音频/GIF。
+
+        剪映的导出面板有四个可选区块：视频 / 音频 / GIF / 字幕。勾了「字幕导出」
+        没勾「视频导出」时，点导出吐出来的是 `.srt` / `.txt`。
+        这些勾选框在 UIA 里**完全不可见**（实测没有 CheckBox、没有 TogglePattern，
+        四个区块容器里一个可交互控件都找不到），程序没法替人勾。
+
+        所以这里只做判断：不是视频就停下来说清楚，别把 `.srt` 当成品推进下一步。
+        """
+        suffix = Path(path).suffix.lower()
+        if suffix in VIDEO_SUFFIXES:
+            return
+        raise AutomationError(
+            f"剪映导出的是 {suffix or '无扩展名'} 文件，不是视频 ——"
+            f" 导出面板里「视频导出」那一项没勾上。\n"
+            f"请在剪映里勾一次「视频导出」（顺手取消「字幕导出」），"
+            f"剪映会记住这个组合，之后就不用再管了。"
+        )
+
+    @staticmethod
     def _resolve_dest(src: Path, output_path: str) -> Path:
         """output_path 是目录就保留原文件名，是文件就用它"""
         target = Path(output_path)
@@ -448,8 +505,36 @@ class JianyingController:
 
     # ─────────────────────────── 窗口 ───────────────────────────
 
+    def close_export_panel(self) -> bool:
+        """关掉导出面板，让状态回到编辑/首页。
+
+        为什么需要：`WindowPattern.Close()` 是唯一实测有效的方式
+        （`SendKeys('{Esc}')` 对它没用）。上次运行中途失败会把这个面板留在
+        打开状态，下次进来 `app_status` 就是 `pre_export`，
+        `switch_to_home()` 会直接报"仅支持从编辑模式切换到主页"，整个流程卡死。
+        """
+        try:
+            panel = self.app
+            if self.app_status != "pre_export":
+                panel = self.app.WindowControl(searchDepth=1, Name="导出")
+            if panel is None or not panel.Exists(0.2):
+                return False
+            pattern = panel.GetWindowPattern()
+            if pattern is None:
+                return False
+            pattern.Close()
+            time.sleep(0.4)
+            self._safe_refresh()
+            return True
+        except Exception:
+            return False
+
     def switch_to_home(self, timeout: Optional[float] = None) -> None:
         """切换到剪映首页（草稿列表）"""
+        # 上次运行留下的导出面板 → 先关掉再继续，别让它卡死整个流程
+        if self.app_status == "pre_export":
+            if not self.close_export_panel():
+                raise AutomationError("导出面板还开着，关不掉 —— 请手动关一下剪映的导出窗口")
         if self.app_status == "home":
             return
         if self.app_status != "edit":

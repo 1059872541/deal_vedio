@@ -124,6 +124,15 @@ class ExportCase(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+        # 分辨率/帧率：默认"读不到"，个别用例自己设
+        self._video_info = {}
+        info_patcher = mock.patch.object(
+            media, "probe_video_info",
+            side_effect=lambda ff, p, **kw: self._video_info,
+        )
+        info_patcher.start()
+        self.addCleanup(info_patcher.stop)
+
         self.enums = {"resolution": FakeResolution, "framerate": FakeFramerate}
 
     def touch(self, path: Path) -> Path:
@@ -235,6 +244,58 @@ class TestExportCollection(ExportCase):
         self.assertEqual(start.fields["draft"], "MC-合集一")
         self.assertEqual(start.fields["resolution"], "1080P")
         self.assertEqual(start.fields["timeout"], 3600.0)
+
+
+# ─────────────────────────── 参数核对 ───────────────────────────
+
+class TestCheckParams(ExportCase):
+    """剪映的分辨率下拉没法程序选，所以导出后必须核对产物实际值。"""
+
+    def test_matching_params(self):
+        self._video_info = {"width": 1920, "height": 1080, "fps": 30.0}
+        self.assertEqual(X.check_video_params(self.p, self._video_info), [])
+
+    def test_wrong_resolution(self):
+        self._video_info = {"width": 1280, "height": 720, "fps": 30.0}
+        problems = X.check_video_params(self.p, self._video_info)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("分辨率", problems[0])
+        self.assertIn("1080P", problems[0])
+
+    def test_wrong_framerate(self):
+        self._video_info = {"width": 1920, "height": 1080, "fps": 25.0}
+        problems = X.check_video_params(self.p, self._video_info)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("帧率", problems[0])
+
+    def test_portrait_uses_short_side(self):
+        """竖屏 1080x1920 也算 1080P"""
+        self._video_info = {"width": 1080, "height": 1920, "fps": 30.0}
+        self.assertEqual(X.check_video_params(self.p, self._video_info), [])
+
+    def test_unreadable_info_warns(self):
+        problems = X.check_video_params(self.p, {})
+        self.assertEqual(len(problems), 1)
+        self.assertIn("读不到", problems[0])
+
+    def test_result_carries_actual_values(self):
+        self._video_info = {"width": 1920, "height": 1080, "fps": 30.0}
+        r = X.export_collection(self.p, self.p.collection("合集一"), FakeController(),
+                                log=self.log, enums=self.enums)
+        self.assertEqual(r.status, "done")
+        self.assertIn("1920x1080@30fps", r.message)
+        self.assertNotIn("参数与配置不符", r.message)
+
+    def test_mismatch_is_reported_but_still_done(self):
+        """片子确实导出来了，不能判失败；但必须大声说"""
+        self._video_info = {"width": 1280, "height": 720, "fps": 25.0}
+        r = X.export_collection(self.p, self.p.collection("合集一"), FakeController(),
+                                log=self.log, enums=self.enums)
+        self.assertEqual(r.status, "done")
+        self.assertIn("参数与配置不符", r.message)
+        event = self.log.last(verb="export", event="done")
+        self.assertEqual(len(event.fields["param_warnings"]), 2)
+        self.assertEqual(event.fields["actual"], "1280x720@25fps")
 
 
 # ─────────────────────────── 批量 ───────────────────────────

@@ -134,6 +134,45 @@ def existing_export(project: Project, collection: Collection) -> tuple[Optional[
     return best, best_len
 
 
+#: 配置里的分辨率 → 视频"短边"像素
+_RESOLUTION_SHORT_SIDE = {
+    "8K": 4320, "4K": 2160, "2K": 1440, "1080P": 1080, "720P": 720, "480P": 480,
+}
+
+
+def check_video_params(project: Project, info: dict) -> list[str]:
+    """核对导出的产物是否符合 `game.yaml` 的 `export` 配置。
+
+    为什么要有这一步：剪映 6.0.1 的分辨率/帧率下拉**没法用程序选**
+    （选项项在 UIA 里不可见，实测点开 30 秒也搜不到）。所以配置里写的
+    `1080P` 只能"尽力而为"。真正的把关放在这里 —— 读产物的实际值来比。
+
+    Returns:
+        不符合项的人话描述；全部符合或读不到信息时返回空列表。
+    """
+    if not info:
+        return ["读不到产物的分辨率/帧率，没法核对（可用 ffprobe 手动查）"]
+
+    problems: list[str] = []
+    want = str(project.rule("export.resolution", "") or "").strip().upper()
+    expected_side = _RESOLUTION_SHORT_SIDE.get(want)
+    if expected_side:
+        actual_side = min(info["width"], info["height"])
+        if actual_side != expected_side:
+            problems.append(f"分辨率要求 {want}（短边 {expected_side}），实际 {actual_side}")
+
+    want_fps = str(project.rule("export.framerate", "") or "").strip().lower()
+    if want_fps.endswith("fps"):
+        try:
+            expected_fps = float(want_fps[:-3])
+        except ValueError:
+            expected_fps = 0.0
+        if expected_fps and abs(info["fps"] - expected_fps) > 0.5:
+            problems.append(f"帧率要求 {want_fps}，实际 {info['fps']:g}fps")
+
+    return problems
+
+
 # ─────────────────────────── 单个合集 ───────────────────────────
 
 def export_collection(project: Project, collection: Collection, controller=None,
@@ -233,13 +272,27 @@ def export_collection(project: Project, collection: Collection, controller=None,
                             target=target_dir, error="export_file_missing",
                             message=f"控制器返回成功，但 {target_dir} 里没有片子")
 
+    # 核对参数：剪映的分辨率下拉没法程序选，只能事后验产物
+    info = media.probe_video_info(project.ffprobe, path)
+    warnings = check_video_params(project, info)
+
     if log is not None:
         log.emit("export", DONE, name, seconds=round(elapsed, 1),
                  file=path.name, video_seconds=round(seconds, 1),
+                 actual=media.describe_video_info(info) or None,
+                 param_warnings=warnings or None,
                  log_file=log_file.name if log_file else None)
+    message = f"导出完成（{media.hhmmss(elapsed)}"
+    actual = media.describe_video_info(info)
+    if actual:
+        message += f"，{actual}"
+    message += "）"
+    if warnings:
+        # 不判失败：片子确实导出来了，只是参数存疑。但要大声说，
+        # 别让人以为"成功"就一定对。
+        message += "；⚠ 参数与配置不符：" + "；".join(warnings)
     return ExportResult(collection=name, status="done", draft=draft,
-                        target=path, seconds=elapsed,
-                        message=f"导出完成（{media.hhmmss(elapsed)}）")
+                        target=path, seconds=elapsed, message=message)
 
 
 # ─────────────────────────── 批量 ───────────────────────────

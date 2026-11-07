@@ -86,3 +86,60 @@ def hhmmss(seconds: float) -> str:
     if s >= 3600:
         return f"{s // 3600}:{(s % 3600) // 60:02d}:{s % 60:02d}"
     return f"{s // 60}:{s % 60:02d}"
+
+
+def probe_video_info(ffprobe: str, path: Path, timeout: float = 60.0) -> dict:
+    """读视频的分辨率和帧率。读不到返回空 dict。
+
+    用途：剪映的分辨率下拉在 6.0.1 上没法用程序选（选项项在 UIA 里不可见），
+    所以配置里写 `1080P` 只能"尽力而为"。**真正的把关在这里** ——
+    导出完读一次产物，和配置比，不对就报出来。
+
+    Returns:
+        {"width": int, "height": int, "fps": float}，失败时 {}
+    """
+    p = Path(path)
+    if not p.is_file():
+        return {}
+    cmd = [
+        ffprobe, "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height,r_frame_rate",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(p),
+    ]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if result.returncode != 0:
+        return {}
+    lines = [ln.strip() for ln in (result.stdout or "").splitlines() if ln.strip()]
+    if len(lines) < 3:
+        return {}
+    try:
+        width, height = int(lines[0]), int(lines[1])
+    except ValueError:
+        return {}
+    fps = 0.0
+    if "/" in lines[2]:
+        num, _, den = lines[2].partition("/")
+        try:
+            fps = float(num) / float(den) if float(den) else 0.0
+        except ValueError:
+            fps = 0.0
+    else:
+        try:
+            fps = float(lines[2])
+        except ValueError:
+            fps = 0.0
+    return {"width": width, "height": height, "fps": round(fps, 2)}
+
+
+def describe_video_info(info: dict) -> str:
+    """`1920x1080@30fps`；读不到就空串"""
+    if not info:
+        return ""
+    return f"{info['width']}x{info['height']}@{info['fps']:g}fps"
