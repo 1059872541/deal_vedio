@@ -220,6 +220,45 @@ def _parse_scalar(raw: str) -> Any:
     return raw
 
 
+# ─────────────────────────── 动词：subtitle ───────────────────────────
+
+def cmd_subtitle(args: argparse.Namespace, project: context.Project) -> int:
+    """字幕三步：加行号 / 纠错 / 回写 srt"""
+    from .events import EventLog
+    from .stages import subtitle as sub_stage
+
+    steps = _split_list(args.steps) or ["number", "correct", "patch"]
+    log = EventLog(project.log_dir)
+
+    results = []
+    try:
+        targets = project.resolve_collections(_split_list(args.collections))
+    except context.ContextError as exc:
+        return _fail(exc.code, exc.message, args.json, **exc.detail)
+
+    for collection in targets:
+        try:
+            results.extend(sub_stage.run(project, collection, steps=steps, log=log,
+                                         prompt=args.prompt, force=args.force))
+        except ValueError as exc:
+            return _fail("bad_step", str(exc), args.json)
+
+    payload = {
+        "ok": all(r.ok for r in results),
+        "results": [r.as_dict() for r in results],
+    }
+
+    def render(p: dict) -> str:
+        lines = []
+        for r in p["results"]:
+            mark = {"done": "✓", "skip": "·", "fail": "✗"}.get(r["status"], "?")
+            lines.append(f"  {mark} {r['collection']}  {r['step']:<8}{r['message']}")
+        return "\n".join(lines) or "  （没有要做的）"
+
+    _emit(payload, args.json, render)
+    return EXIT_OK if payload["ok"] else EXIT_FAIL
+
+
 # ─────────────────────────── 参数解析 ───────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -264,6 +303,15 @@ def build_parser() -> argparse.ArgumentParser:
                         help="覆盖规则里的一项，如 --set duration.episode_body=450；可重复")
     p_init.add_argument("--dry-run", action="store_true", help="只算不建")
     p_init.set_defaults(handler=cmd_init, needs_project=False)
+
+    p_sub = sub.add_parser("subtitle", help="字幕三步：加行号 / 纠错 / 回写 srt")
+    add_common(p_sub)
+    p_sub.add_argument("--collections", help="只做这些合集，逗号分隔；不传=全部")
+    p_sub.add_argument("--steps", default="number,correct,patch",
+                       help="要跑哪几步，逗号分隔（默认全部）")
+    p_sub.add_argument("--prompt", help="纠错提示词（带【主题】可触发知识库）")
+    p_sub.add_argument("--force", action="store_true", help="已有产出也重跑")
+    p_sub.set_defaults(handler=cmd_subtitle)
 
     return parser
 
