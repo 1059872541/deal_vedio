@@ -274,6 +274,22 @@ Get-ChildItem "<workspace.root>" -Directory
 
 **取路径不要自己拼**：用 `vedio paths --game X --batch Y --collection Z --json`。
 
+### 4.1 目录里放着但不该参与流水线的
+
+合集列表是**扫目录**得来的（`game.yaml` 的 `collections: N` 只在建批次时用来建目录）。
+所以往 `合集/` 里随便放一个 `合集三/`（例如放测试素材），它立刻会被当成正式合集：
+`status` 算它一集没录，批量跑 `subtitle` / `run` 不加 `--collections` 也会动到它。
+
+**要保留但不想让它参与，就在 `game.yaml` 里登记：**
+
+```yaml
+ignore_collections:
+  - 合集三
+```
+
+被忽略的目录**原样保留**（不删、不改），只是不统计、不处理。
+`status` 会显式打一行「忽略：合集三」，不会让它悄悄消失。
+
 ---
 
 ## §5 状态怎么判（全部看文件，不看数据库）

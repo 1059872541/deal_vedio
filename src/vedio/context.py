@@ -753,14 +753,35 @@ class Project:
 
     # ── 合集 ──
 
+    def ignored_collections(self) -> list[str]:
+        """`game.yaml` 的 `ignore_collections`：目录里放着、但不参与流水线的合集。
+
+        为什么需要：合集列表是**扫目录**得来的，`collections: N` 只在 `init`
+        建目录时用。所以随便往 `合集/` 里放一个 `合集三/`（比如放测试素材），
+        它立刻会被当成正式合集 —— `status` 算它一集没录，批量跑 `subtitle` /
+        `run` 不加 `--collections` 也会动到它。
+
+        `ignore_collections` 让"不登记"变成显式声明，而不是靠目录不存在。
+        """
+        raw = self.rule("ignore_collections", []) or []
+        if isinstance(raw, str):
+            raw = [raw]
+        return [str(x).strip() for x in raw if str(x).strip()]
+
     def collections(self) -> list[Collection]:
-        """批次里的所有合集，按中文数字升序。目录不存在时返回空列表。"""
+        """批次里的所有合集，按中文数字升序。目录不存在时返回空列表。
+
+        `ignore_collections` 里列出的会被跳过（测试素材等）。
+        """
         d = self.collections_dir
         if not d.is_dir():
             return []
+        ignored = set(self.ignored_collections())
         found: list[tuple[int, str]] = []
         for child in d.iterdir():
             if not child.is_dir():
+                continue
+            if child.name in ignored:
                 continue
             idx = collection_index(child.name)
             if idx is None:

@@ -138,6 +138,8 @@ class BatchStatus:
     batch: str
     name: str
     collections: list[CollectionStatus] = field(default_factory=list)
+    #: 目录里存在但被 `game.yaml` 的 `ignore_collections` 排除的（测试素材等）
+    ignored: list[str] = field(default_factory=list)
 
     @property
     def episode_total(self) -> int:
@@ -155,6 +157,7 @@ class BatchStatus:
             "collection_count": len(self.collections),
             "episode_total": self.episode_total,
             "done": self.done_count,
+            "ignored": self.ignored,
             "collections": [c.as_dict() for c in self.collections],
         }
 
@@ -247,6 +250,12 @@ def collect(project: Project, probe: Optional[Probe] = None,
 
     targets = project.resolve_collections(collections)
     status = BatchStatus(game=project.game, batch=project.batch, name=project.name)
+    # 只列没被 --collections 过滤掉的，免得"忽略"提示和筛选打架
+    ignored = project.ignored_collections()
+    if collections:
+        wanted = set(collections)
+        ignored = [n for n in ignored if n in wanted]
+    status.ignored = ignored
     for c in targets:
         status.collections.append(collect_collection(project, c, probe, log))
     return status
@@ -306,6 +315,10 @@ def render(status: BatchStatus) -> str:
     lines = [head, pad("合集", name_w) + "".join(pad(col, col_ws[i]) for i, col in enumerate(cols))]
     for name, cells in rows:
         lines.append(pad(name, name_w) + "".join(pad(cell, col_ws[i]) for i, cell in enumerate(cells)))
+    if status.ignored:
+        # 别让人以为素材"凭空消失" —— 明确说这几个被排除了
+        lines.append("")
+        lines.append(f"  忽略：{'、'.join(status.ignored)}（game.yaml 的 ignore_collections，不参与流水线）")
     return "\n".join(lines)
 
 

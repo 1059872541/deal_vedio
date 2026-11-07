@@ -40,6 +40,7 @@ GAME_RULES_DIR = "游戏规则"
 
 #: game.yaml 里各段的注释（顺序即渲染顺序）
 SECTION_COMMENTS: list[tuple[str, str]] = [
+    ("ignore_collections", "不参与流水线的合集目录（测试素材等）；空 = 全部参与"),
     ("duration", "时长（单位：秒）"),
     ("export", "视频导出（剪映「视频导出」面板上的 5 项 + 超时）"),
     ("naming", "命名规范：{host} {game} {subtitle} {collection} {cn_ep} {ep} {title}"),

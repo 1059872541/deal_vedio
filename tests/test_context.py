@@ -338,6 +338,53 @@ class TestCollections(TempDirCase):
 
 # ─────────────────────────── 标题与副标题 ───────────────────────────
 
+class TestIgnoredCollections(TempDirCase):
+    """`ignore_collections`：目录里放着但不参与流水线的合集。
+
+    为什么需要：合集列表是扫目录得来的，`collections: N` 只在 init 建目录时用。
+    所以往 合集/ 里放一个「合集三/」放测试素材，它立刻会被当成正式合集。
+    """
+
+    def rules_with(self, line: str) -> str:
+        return RULES.replace("collections: 3", "collections: 3\n" + line)
+
+    def test_absent_means_all_participate(self):
+        local = build_batch(self.tmp)
+        p = C.Project.open("我的世界", "2026-12", local=local)
+        self.assertEqual(p.ignored_collections(), [])
+        self.assertEqual(p.collection_names(), ["合集一", "合集二"])
+
+    def test_list_form_skips_collections(self):
+        local = build_batch(self.tmp, rules=self.rules_with("ignore_collections: [合集二]"))
+        p = C.Project.open("我的世界", "2026-12", local=local)
+        self.assertEqual(p.ignored_collections(), ["合集二"])
+        self.assertEqual(p.collection_names(), ["合集一"])
+
+    def test_string_form_is_accepted(self):
+        """单值别强迫用户写成列表"""
+        local = build_batch(self.tmp, rules=self.rules_with("ignore_collections: 合集二"))
+        p = C.Project.open("我的世界", "2026-12", local=local)
+        self.assertEqual(p.ignored_collections(), ["合集二"])
+
+    def test_dir_still_exists_but_hidden(self):
+        """忽略 ≠ 删除：目录和文件都得原样留着"""
+        local = build_batch(self.tmp, rules=self.rules_with("ignore_collections: [合集二]"))
+        p = C.Project.open("我的世界", "2026-12", local=local)
+        self.assertTrue((p.collections_dir / "合集二").is_dir())
+        self.assertNotIn("合集二", p.collection_names())
+
+    def test_nonexistent_name_is_harmless(self):
+        local = build_batch(self.tmp, rules=self.rules_with("ignore_collections: [合集九]"))
+        p = C.Project.open("我的世界", "2026-12", local=local)
+        self.assertEqual(p.collection_names(), ["合集一", "合集二"])
+
+    def test_resolve_collections_respects_ignore(self):
+        """批量跑时不加 --collections 不能动到被忽略的"""
+        local = build_batch(self.tmp, rules=self.rules_with("ignore_collections: [合集二]"))
+        p = C.Project.open("我的世界", "2026-12", local=local)
+        self.assertEqual([c.name for c in p.resolve_collections(None)], ["合集一"])
+
+
 class TestTitles(TempDirCase):
     def test_parse_prefix_subtitle_and_titles(self):
         p = self.open(titles=TITLES)

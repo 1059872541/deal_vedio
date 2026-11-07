@@ -294,6 +294,27 @@ class TestBatch(StatusCase):
         text = S.render(self.status(["合集一"]))
         self.assertIn("10:00/20:00", text)
 
+    def test_ignored_collections_are_listed(self):
+        """被 ignore_collections 排除的要**说出来**，不能默默消失"""
+        self.p._rules["ignore_collections"] = ["合集二"]
+        bs = self.status()
+        self.assertEqual([c.collection for c in bs.collections], ["合集一"])
+        self.assertEqual(bs.ignored, ["合集二"])
+        text = S.render(bs)
+        self.assertIn("忽略：合集二", text)
+        self.assertIn("ignore_collections", text)
+        self.assertEqual(bs.as_dict()["ignored"], ["合集二"])
+
+    def test_ignored_hidden_when_filtered_out(self):
+        """--collections 只查合集一 时，不该冒出合集二的忽略提示"""
+        self.p._rules["ignore_collections"] = ["合集二"]
+        bs = self.status(["合集一"])
+        self.assertEqual(bs.ignored, [])
+
+    def test_no_ignored_means_no_hint(self):
+        text = S.render(self.status())
+        self.assertNotIn("忽略：", text)
+
     def test_render_next_hints(self):
         text = S.render_next(self.status())
         self.assertIn("继续录制", text)
