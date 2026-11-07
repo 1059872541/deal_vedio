@@ -537,7 +537,8 @@ def cmd_ledger(args: argparse.Namespace, project: context.Project) -> int:
     log = EventLog(project.log_dir)
     with _quiet_stdout(args.json):
         result = ledger_stage.build_ledger(project, _split_list(args.collections),
-                                           log=log, force=args.force)
+                                           log=log, force=args.force,
+                                           with_ai=not getattr(args, 'no_ai', False))
     payload = result.as_dict()
 
     def render(p: dict) -> str:
@@ -792,6 +793,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(p_ledger)
     p_ledger.add_argument("--collections", help="只写这些合集，逗号分隔；不传=全部")
     p_ledger.add_argument("--force", action="store_true", help="已有台账也重写")
+    p_ledger.add_argument("--no-ai", action="store_true",
+                          help="不生成「内容介绍 / 关键字」两列（默认由模型生成）")
     p_ledger.set_defaults(handler=cmd_ledger)
 
     p_run = sub.add_parser("run", help="按步骤推进（可夜里跑）")
