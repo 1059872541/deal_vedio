@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -32,6 +33,16 @@ PROG = "vedio"
 EXIT_OK = 0
 EXIT_FAIL = 1
 EXIT_USAGE = 2
+
+
+def _quiet_stdout(as_json: bool):
+    """`--json` 时把阶段内部的 print 赶到 stderr。
+
+    旧代码（剪映控制器、LangGraph agent、balance 脚本）会直接 print 进度，
+    混进 stdout 会让 `--json` 的输出变成"散文 + JSON"，解析器直接崩。
+    人要看进度就看 stderr，机器要的 stdout 保持干净。
+    """
+    return contextlib.redirect_stdout(sys.stderr) if as_json else contextlib.nullcontext()
 
 
 # ─────────────────────────── 输出 ───────────────────────────
@@ -128,12 +139,13 @@ def cmd_export(args: argparse.Namespace, project: context.Project) -> int:
     from .stages import export as export_stage
 
     log = EventLog(project.log_dir)
-    batch = export_stage.export_drafts(
-        project,
-        _split_list(args.collections),
-        log=log,
-        force=args.force,
-    )
+    with _quiet_stdout(args.json):
+        batch = export_stage.export_drafts(
+            project,
+            _split_list(args.collections),
+            log=log,
+            force=args.force,
+        )
     payload = batch.as_dict()
 
     def render(p: dict) -> str:
@@ -238,8 +250,9 @@ def cmd_subtitle(args: argparse.Namespace, project: context.Project) -> int:
 
     for collection in targets:
         try:
-            results.extend(sub_stage.run(project, collection, steps=steps, log=log,
-                                         prompt=args.prompt, force=args.force))
+            with _quiet_stdout(args.json):
+                results.extend(sub_stage.run(project, collection, steps=steps, log=log,
+                                             prompt=args.prompt, force=args.force))
         except ValueError as exc:
             return _fail("bad_step", str(exc), args.json)
 
@@ -267,8 +280,9 @@ def cmd_splice(args: argparse.Namespace, project: context.Project) -> int:
     from .stages import splice as splice_stage
 
     log = EventLog(project.log_dir)
-    results = splice_stage.splice_batch(project, _split_list(args.collections),
-                                        log=log, force=args.force)
+    with _quiet_stdout(args.json):
+        results = splice_stage.splice_batch(project, _split_list(args.collections),
+                                            log=log, force=args.force)
     payload = {
         "ok": all(r.ok for r in results),
         "results": [r.as_dict() for r in results],
@@ -293,8 +307,9 @@ def cmd_rename(args: argparse.Namespace, project: context.Project) -> int:
     from .stages import rename as rename_stage
 
     log = EventLog(project.log_dir)
-    results = rename_stage.rename_batch(project, _split_list(args.collections),
-                                        log=log, dry_run=args.dry_run)
+    with _quiet_stdout(args.json):
+        results = rename_stage.rename_batch(project, _split_list(args.collections),
+                                            log=log, dry_run=args.dry_run)
     payload = {"ok": all(r.ok for r in results), "results": [r.as_dict() for r in results]}
 
     def render(p: dict) -> str:
@@ -317,8 +332,9 @@ def cmd_ledger(args: argparse.Namespace, project: context.Project) -> int:
     from .stages import ledger as ledger_stage
 
     log = EventLog(project.log_dir)
-    result = ledger_stage.build_ledger(project, _split_list(args.collections),
-                                       log=log, force=args.force)
+    with _quiet_stdout(args.json):
+        result = ledger_stage.build_ledger(project, _split_list(args.collections),
+                                           log=log, force=args.force)
     payload = result.as_dict()
 
     def render(p: dict) -> str:
@@ -337,7 +353,8 @@ def cmd_run(args: argparse.Namespace, project: context.Project) -> int:
     steps = _split_list(args.steps)
     log = EventLog(project.log_dir)
     try:
-        report = run_stage.run(project, steps, _split_list(args.collections), log=log)
+        with _quiet_stdout(args.json):
+            report = run_stage.run(project, steps, _split_list(args.collections), log=log)
     except ValueError as exc:
         return _fail("bad_step", str(exc), args.json)
 
@@ -363,7 +380,8 @@ def cmd_series(args: argparse.Namespace, project: context.Project) -> int:
     from .stages import series as series_stage
 
     log = EventLog(project.log_dir)
-    result = series_stage.apply(project, args.groups, log=log, force=args.force)
+    with _quiet_stdout(args.json):
+        result = series_stage.apply(project, args.groups, log=log, force=args.force)
     payload = result.as_dict()
 
     def render(p: dict) -> str:

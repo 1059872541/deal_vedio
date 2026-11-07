@@ -136,14 +136,18 @@ def existing_export(project: Project, collection: Collection) -> tuple[Optional[
 
 # ─────────────────────────── 单个合集 ───────────────────────────
 
-def export_collection(project: Project, collection: Collection, controller,
+def export_collection(project: Project, collection: Collection, controller=None,
                       *, log: Optional[EventLog] = None,
                       force: bool = False,
-                      enums: Optional[dict] = None) -> ExportResult:
+                      enums: Optional[dict] = None,
+                      controller_factory: Optional[Callable[[], Any]] = None
+                      ) -> ExportResult:
     """导出一个合集。
 
     Args:
-        controller: `jianying_export.JianyingController` 实例（测试可注入假的）
+        controller: 已构造好的控制器（测试注入用）
+        controller_factory: 延迟构造；**只有真要导出时才调用** ——
+            草稿没登记或已经导出过时不该去碰剪映
         force: True 则即使已经导出过也重导
     """
     name = collection.name
@@ -171,6 +175,13 @@ def export_collection(project: Project, collection: Collection, controller,
                                 message=f"剪辑/ 里已有 {path.name}（{media.hhmmss(seconds)}）")
 
     # ── 3. 调控制器 ──
+    if controller is None:
+        if controller_factory is None:
+            from jianying_export import JianyingController
+            controller = JianyingController()
+        else:
+            controller = controller_factory()
+
     if enums is None:
         from jianying_export import ExportFramerate, ExportResolution
         enums = {"resolution": ExportResolution, "framerate": ExportFramerate}
@@ -237,17 +248,16 @@ def export_drafts(project: Project, collections: Optional[list[str]] = None,
     if log is None:
         log = EventLog(project.log_dir)
 
-    if controller is None:
-        if controller_factory is None:
-            def controller_factory():
-                from jianying_export import JianyingController
-                return JianyingController()
-        controller = controller_factory()
+    if controller is None and controller_factory is None:
+        def controller_factory():
+            from jianying_export import JianyingController
+            return JianyingController()
 
     targets = project.resolve_collections(collections)
     batch = ExportBatch()
     for c in targets:
         batch.results.append(
-            export_collection(project, c, controller, log=log, force=force, enums=enums)
+            export_collection(project, c, controller, log=log, force=force,
+                              enums=enums, controller_factory=controller_factory)
         )
     return batch

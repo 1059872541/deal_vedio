@@ -279,6 +279,36 @@ class TestExportBatch(ExportCase):
         self.assertEqual(len(made), 1)
         self.assertTrue(b.ok)
 
+    def test_controller_not_built_when_no_draft_registered(self):
+        """草稿一个都没登记时不该去碰剪映 —— 否则会白开一次 GUI 自动化"""
+        made = []
+
+        def factory():
+            made.append(1)
+            return FakeController()
+
+        self.p._manifest["drafts"].clear()
+        b = X.export_drafts(self.p, None, log=self.log,
+                            controller_factory=factory, enums=self.enums)
+        self.assertEqual(made, [], "没有可导出的合集，不该构造控制器")
+        self.assertFalse(b.ok)
+        self.assertTrue(all(r.error == "draft_not_found" for r in b.results))
+
+    def test_controller_not_built_when_all_already_exported(self):
+        made = []
+
+        def factory():
+            made.append(1)
+            return FakeController()
+
+        for name in ("合集一", "合集二"):
+            self.touch(self.p.collection(name).editing / "长片.mp4")
+        b = X.export_drafts(self.p, None, log=self.log,
+                            controller_factory=factory, enums=self.enums)
+        self.assertEqual(made, [], "全都导出过了，不该构造控制器")
+        self.assertTrue(b.ok)
+        self.assertEqual(b.as_dict()["skipped"], 2)
+
     def test_json_serializable(self):
         import json
         payload = self.export(controller=FakeController()).as_dict()

@@ -216,5 +216,145 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(cli._split_list("合集一,, "), ["合集一"])
 
 
+# ─────────────────────────── 其余动词的接线 ───────────────────────────
+
+class TestVerbDispatch(CliCase):
+    """每个动词至少过一遍 CLI 分发层。
+
+    阶段函数自己的行为由各自的测试覆盖；这里只验**接线**：
+    参数名对不对、退出码对不对、错误码能不能取到。
+    接线错了（比如 argparse 属性名拼错）阶段测试是抓不到的。
+    """
+
+    def setUp(self):
+        super().setUp()
+        # 给 series / rename 一个可用的标题文件
+        (self.root / "标题.md").write_text(
+            "# 我的世界系列视频标题列表\n公共前缀:波波之我的世界\n", encoding="utf-8")
+        # 默认不登记草稿：让 export 的行为确定（不去碰剪映）
+        (self.root / "合集清单.yaml").write_text(
+            "drafts: {}\ntemplates:\n  intro_mapping: {}\n  outro: null\n", encoding="utf-8")
+
+    def base(self):
+        return ["--game", "我的世界", "--batch", "2026-12"]
+
+    def test_init_dry_run(self):
+        code, out, err = self.run_cli("init", "--game", "我的世界", "--batch", "2026-13",
+                                      "--collections", "2", "--host", "波波", "--dry-run")
+        self.assertEqual(code, 0)
+        self.assertIn("将要创建", out)
+        self.assertIn("我的世界-2026-13", out)
+        self.assertFalse((self.tmp / "我的世界-2026-13").exists(), "dry-run 不能写盘")
+
+    def test_init_creates_and_reports(self):
+        code, out, err = self.run_cli("init", "--game", "我的世界", "--batch", "2026-13",
+                                      "--collections", "1", "--host", "波波", "--json")
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertEqual(payload["collections"], 1)
+        self.assertTrue((self.tmp / "我的世界-2026-13" / "game.yaml").is_file())
+
+    def test_init_existing_batch_reports_error(self):
+        code, out, err = self.run_cli("init", *self.base(), "--json")
+        self.assertEqual(code, cli.EXIT_FAIL)
+        self.assertEqual(json.loads(err)["error"], "batch_exists")
+
+    def test_init_bad_set(self):
+        code, out, err = self.run_cli("init", "--game", "我的世界", "--batch", "2026-14",
+                                      "--set", "没有等号", "--json")
+        self.assertEqual(code, cli.EXIT_FAIL)
+        self.assertEqual(json.loads(err)["error"], "bad_override")
+
+    def test_export_without_draft_registration(self):
+        """草稿没登记 → 直接报错，不该去碰剪映"""
+        code, out, err = self.run_cli("export", *self.base(), "--json")
+        self.assertEqual(code, cli.EXIT_FAIL)
+        payload = json.loads(out)
+        self.assertFalse(payload["ok"])
+        self.assertEqual({r["error"] for r in payload["results"]}, {"draft_not_found"})
+
+    def test_subtitle_without_files(self):
+        code, out, err = self.run_cli("subtitle", *self.base(), "--collections", "合集一", "--json")
+        self.assertEqual(code, cli.EXIT_FAIL)
+        payload = json.loads(out)
+        self.assertEqual(payload["results"][0]["step"], "number")
+        self.assertEqual(payload["results"][0]["error"], "source_txt_missing")
+
+    def test_splice_without_long_video(self):
+        code, out, err = self.run_cli("splice", *self.base(), "--collections", "合集一", "--json")
+        self.assertEqual(code, cli.EXIT_FAIL)
+        self.assertEqual(json.loads(out)["results"][0]["error"], "template_missing")
+
+    def test_rename_without_titles_section(self):
+        code, out, err = self.run_cli("rename", *self.base(), "--collections", "合集一", "--json")
+        self.assertEqual(code, cli.EXIT_FAIL)
+        self.assertEqual(json.loads(out)["results"][0]["error"], "titles_missing")
+
+    def test_ledger_without_final_video(self):
+        code, out, err = self.run_cli("ledger", *self.base(), "--json")
+        self.assertEqual(code, cli.EXIT_FAIL)
+        self.assertEqual(json.loads(out)["error"], "no_data")
+
+    def test_series_writes_subtitle(self):
+        code, out, err = self.run_cli("series", *self.base(),
+                                      "--groups", "合集一=测试篇", "--json")
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertEqual(payload["assignments"], {"合集一": "测试篇"})
+        text = (self.root / "标题.md").read_text(encoding="utf-8")
+        self.assertIn("#### 合集一:测试篇", text)
+
+    def test_series_bad_groups(self):
+        code, out, err = self.run_cli("series", *self.base(), "--groups", "缺等号", "--json")
+        self.assertEqual(code, cli.EXIT_FAIL)
+        self.assertEqual(json.loads(out)["error"], "bad_spec")
+
+    def test_run_with_unknown_step(self):
+        code, out, err = self.run_cli("run", *self.base(), "--steps", "乱写", "--json")
+        self.assertEqual(code, cli.EXIT_FAIL)
+        self.assertEqual(json.loads(err)["error"], "bad_step")
+
+    def test_run_reports_failure_per_collection(self):
+        code, out, err = self.run_cli("run", *self.base(), "--steps", "number", "--json")
+        self.assertEqual(code, cli.EXIT_FAIL)
+        payload = json.loads(out)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(len(payload["failed"]), 2)     # 两个合集都失败
+
+    def test_json_stays_parseable_when_stage_prints(self):
+        """阶段内部 print 进度（旧控制器/旧 agent 都这么干）时，stdout 必须还是纯 JSON"""
+        from unittest import mock
+        from vedio.stages import ledger as L
+
+        class FakeResult:
+            ok = True
+            status = "done"
+            path = None
+
+            def as_dict(self):
+                return {"status": "done", "path": None, "message": "ok", "rows": 3}
+
+        def noisy(*args, **kwargs):
+            print("这行是阶段内部的进度输出，不该进 stdout")
+            return FakeResult()
+
+        with mock.patch.object(L, "build_ledger", noisy):
+            code, out, err = self.run_cli("ledger", *self.base(), "--json")
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)                     # 能解析才算合格
+        self.assertEqual(payload["status"], "done")
+        self.assertIn("进度输出", err)                 # 被赶到 stderr 了
+
+    def test_all_verbs_have_help(self):
+        """十个动词都要能加载（防 import 错误）"""
+        for verb in ("paths", "status", "init", "subtitle", "export",
+                     "splice", "rename", "ledger", "run", "series"):
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                with self.assertRaises(SystemExit) as ctx:
+                    cli.main([verb, "--help"])
+            self.assertEqual(ctx.exception.code, 0, f"{verb} --help 失败：{err.getvalue()}")
+
+
 if __name__ == "__main__":
     unittest.main()
