@@ -35,12 +35,41 @@ EXIT_FAIL = 1
 EXIT_USAGE = 2
 
 
-def _quiet_stdout(as_json: bool):
-    """`--json` 时把阶段内部的 print 赶到 stderr。
+#: 结果的出口。在 `main()` 一开头固定住。
+#:
+#: 为什么需要它：`--quiet` 会把 `sys.stdout` / `sys.stderr` 换成"只写日志文件"的流。
+#: 如果结果也走 `sys.stdout`，它会被一起吞掉 —— 那就成了"静音把结论也静没了"。
+#: 所以结果永远写这里，而不是当时的 `sys.stdout`。
+_RESULT_STREAMS: dict[str, Any] = {"out": None, "err": None, "quiet": False}
 
-    旧代码（剪映控制器、LangGraph agent、balance 脚本）会直接 print 进度，
-    混进 stdout 会让 `--json` 的输出变成"散文 + JSON"，解析器直接崩。
-    人要看进度就看 stderr，机器要的 stdout 保持干净。
+
+def _result_out() -> Any:
+    return _RESULT_STREAMS["out"] or sys.stdout
+
+
+def _result_err() -> Any:
+    return _RESULT_STREAMS["err"] or sys.stderr
+
+
+def _emit_stream() -> Any:
+    """结果该写哪个流。
+
+    - 正常模式：写当时的 `sys.stdout` —— 它被 capture 换成了 tee，
+      于是结果**既上控制台也进 run-*.log**（"一次调用的全部输出"要完整）。
+    - 安静模式：写真实 stdout（`_result_out()`），否则会被只写文件的流吞掉。
+    """
+    return _result_out() if _RESULT_STREAMS["quiet"] else sys.stdout
+
+
+def _err_stream() -> Any:
+    return _result_err() if _RESULT_STREAMS["quiet"] else sys.stderr
+
+
+def _quiet_stdout(as_json: bool):
+    """把阶段内部的 print 从 stdout 赶走，保证 `--json` 的 stdout 是纯 JSON。
+
+    注意这只是**保 stdout 干净**，不是静音：内容去了 stderr，调用方照样收得到。
+    真正的静音是 `--quiet`，见 `EventLog.capture(echo=False)`。
     """
     return contextlib.redirect_stdout(sys.stderr) if as_json else contextlib.nullcontext()
 
@@ -66,23 +95,33 @@ def _log_hint(project: context.Project) -> str:
 
 def _emit(payload: dict[str, Any], as_json: bool, renderer: Optional[Callable[[dict], str]] = None) -> None:
     if as_json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        text = json.dumps(payload, ensure_ascii=False, indent=2)
     elif renderer is not None:
-        print(renderer(payload))
+        text = renderer(payload)
     else:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        text = json.dumps(payload, ensure_ascii=False, indent=2)
+
+    print(text, file=_emit_stream())
+    if _RESULT_STREAMS["quiet"]:
+        # 安静模式下这条路径绕过了 capture 的 tee，手动把结果补进日志
+        from .events import write_to_captures
+        write_to_captures(text + "\n")
 
 
 def _fail(code: str, message: str, as_json: bool, hint: str = "", **extra: Any) -> int:
     payload = {"error": code, "message": message, **extra}
     if hint:
         payload["hint"] = hint
+    stream = _err_stream()
     if as_json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        text = json.dumps(payload, ensure_ascii=False, indent=2)
+        print(text, file=stream)
     else:
-        print(f"错误：{message}", file=sys.stderr)
-        if hint:
-            print(f"  {hint}", file=sys.stderr)
+        text = f"错误：{message}" + (f"\n  {hint}" if hint else "")
+        print(text, file=stream)
+    if _RESULT_STREAMS["quiet"]:
+        from .events import write_to_captures
+        write_to_captures(text + "\n")
     return EXIT_FAIL
 
 
@@ -471,7 +510,9 @@ def build_parser() -> argparse.ArgumentParser:
     def add_common(p: argparse.ArgumentParser) -> None:
         p.add_argument("--game", required=True, help="游戏名，如 我的世界")
         p.add_argument("--batch", required=True, help="批次，如 2026-12")
-        p.add_argument("--json", action="store_true", help="输出结构化 JSON")
+        p.add_argument("--json", action="store_true", help="输出结构化 JSON（并自动 --quiet）")
+        p.add_argument("--quiet", action="store_true",
+                       help="过程只写日志文件，控制台只留结论（agent 调用时用）")
 
     p_paths = sub.add_parser("paths", help="看目录在哪（只读）")
     add_common(p_paths)
@@ -587,6 +628,10 @@ def _run_with_log(args: argparse.Namespace, project: context.Project,
     内层 stage 自己的 capture 会再套一层，于是同一份内容既进
     `run-*.log`（整次调用），也进 `agent-subtitle-*.log`（单个合集）。
     多写几 KB，换"永远找得到"。
+
+    **`--quiet` / `--json` 时改为 `echo=False`**：过程只进文件，控制台只留结论。
+    这是给 agent 用的 —— agent 的"工具结果"就是 stdout/stderr 文本，
+    过程打多少它就收多少，单次 2 小时字幕能到两千多行。
     """
     from .events import EventLog
 
@@ -595,7 +640,11 @@ def _run_with_log(args: argparse.Namespace, project: context.Project,
     except OSError:
         return handler(args, project)          # 日志目录建不了也不能让命令跑不了
 
-    with elog.capture(f"run-{args.verb}"):
+    # --json 是机器模式，默认就该安静；--quiet 是显式要求。
+    quiet = bool(getattr(args, "quiet", False) or getattr(args, "json", False))
+    _RESULT_STREAMS["quiet"] = quiet
+
+    with elog.capture(f"run-{args.verb}", echo=not quiet):
         try:
             return handler(args, project)
         except context.ContextError:
@@ -614,10 +663,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    # 结果出口在这里固定住。--quiet 之后 sys.stdout/stderr 会被换成"只写文件"的流，
+    # 结果若跟着走就会被一起吞掉 —— 那就成了"静音把结论也静没了"。
+    _RESULT_STREAMS["out"] = sys.stdout
+    _RESULT_STREAMS["err"] = sys.stderr
+    _RESULT_STREAMS["quiet"] = False
+    try:
+        return _main(args, parser)
+    finally:
+        _RESULT_STREAMS["out"] = _RESULT_STREAMS["err"] = None
+        _RESULT_STREAMS["quiet"] = False
+
+
+def _main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     as_json = getattr(args, "json", False)
     handler = getattr(args, "handler", None)
     if handler is None:
-        parser.print_help(sys.stderr)
+        parser.print_help(_result_err())
         return EXIT_USAGE
 
     # init 是"建批次"，此时批次还不存在 —— 不能先 Project.open

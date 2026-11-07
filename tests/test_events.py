@@ -15,7 +15,7 @@ import json
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -312,6 +312,47 @@ class TestCapture(TempCase):
                 print("崩之前最后一句")
                 raise RuntimeError("boom")
         self.assertIn("崩之前最后一句", path.read_text(encoding="utf-8"))
+
+    def test_echo_false_writes_file_but_not_console(self):
+        """`--quiet` 的实现：只写文件，控制台一个字节都不出。
+
+        不能用"改道到 stderr"来假装安静 —— 调用方的工具结果同时收 stdout 和 stderr。
+        """
+        log = self.make()
+        console = io.StringIO()
+        with redirect_stdout(console):
+            with log.capture("x", echo=False) as path:
+                print("这段只该进文件")
+        self.assertEqual(console.getvalue(), "")                       # 控制台空
+        self.assertIn("这段只该进文件", path.read_text(encoding="utf-8"))  # 文件有
+
+    def test_echo_false_also_silences_stderr(self):
+        log = self.make()
+        console = io.StringIO()
+        with redirect_stderr(console):
+            with log.capture("x", echo=False) as path:
+                print("错误流也静音", file=sys.stderr)
+        self.assertEqual(console.getvalue(), "")
+        self.assertIn("错误流也静音", path.read_text(encoding="utf-8"))
+
+    def test_write_to_captures_reaches_open_log(self):
+        """安静模式下结果绕过了 tee，靠这个补进日志"""
+        log = self.make()
+        with log.capture("x", echo=False) as path:
+            E.write_to_captures("结果补写\n")
+        self.assertIn("结果补写", path.read_text(encoding="utf-8"))
+
+    def test_write_to_captures_without_open_log(self):
+        self.assertFalse(E.write_to_captures("没人收\n"))
+
+    def test_nested_captures_both_get_content(self):
+        """外层 run 日志 + 内层合集日志都要有"""
+        log = self.make()
+        with log.capture("run", echo=False) as outer:
+            with log.capture("agent", "合集一", echo=False) as inner:
+                print("嵌套输出")
+        self.assertIn("嵌套输出", outer.read_text(encoding="utf-8"))
+        self.assertIn("嵌套输出", inner.read_text(encoding="utf-8"))
 
     def test_works_inside_redirect(self):
         """CLI 的 --json 模式会先把 stdout 指向 stderr，capture 要能套在里面"""

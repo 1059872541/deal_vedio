@@ -322,7 +322,10 @@ class TestVerbDispatch(CliCase):
         self.assertEqual(len(payload["failed"]), 2)     # 两个合集都失败
 
     def test_json_stays_parseable_when_stage_prints(self):
-        """阶段内部 print 进度（旧控制器/旧 agent 都这么干）时，stdout 必须还是纯 JSON"""
+        """阶段内部 print 进度（旧控制器/旧 agent 都这么干）时，stdout 必须还是纯 JSON。
+
+        而且 `--json` 现在会自动静音：那些进度**不进控制台**，只进 run 日志。
+        """
         from unittest import mock
         from vedio.stages import ledger as L
 
@@ -343,7 +346,10 @@ class TestVerbDispatch(CliCase):
         self.assertEqual(code, 0, err)
         payload = json.loads(out)                     # 能解析才算合格
         self.assertEqual(payload["status"], "done")
-        self.assertIn("进度输出", err)                 # 被赶到 stderr 了
+        self.assertNotIn("进度输出", err)              # 自动静音：连 stderr 都不该有
+        logs = list((self.root / "log").glob("run-ledger-*.log"))
+        self.assertEqual(len(logs), 1)
+        self.assertIn("进度输出", logs[0].read_text(encoding="utf-8"))  # 但日志里要有
 
     def test_logs_empty(self):
         code, out, err = self.run_cli("logs", *self.base(), "--json")
@@ -454,6 +460,94 @@ class TestVerbDispatch(CliCase):
                 with self.assertRaises(SystemExit) as ctx:
                     cli.main([verb, "--help"])
             self.assertEqual(ctx.exception.code, 0, f"{verb} --help 失败：{err.getvalue()}")
+
+
+# ─────────────────────────── --quiet ───────────────────────────
+
+class TestQuiet(CliCase):
+    """`--quiet`：过程只进日志文件，控制台只留结论。
+
+    为什么需要它：agent 的「工具结果」就是 stdout/stderr 文本，命令打多少它就收多少。
+    一次 2 小时字幕能印两千多行，全进上下文。`--json` 既然已经是机器模式，
+    就默认安静；`--quiet` 让它能单独用在人读模式上。
+    """
+
+    def setUp(self):
+        super().setUp()
+        (self.root / "标题.md").write_text(
+            "# 我的世界系列视频标题列表\n公共前缀:波波之我的世界\n", encoding="utf-8")
+
+    def base(self):
+        return ["--game", "我的世界", "--batch", "2026-12"]
+
+    def noisy_verb(self, *extra):
+        """ledger 会被打桩成"先 print 一堆过程、再返回结果"
+
+        用 ledger 而不是 subtitle，是因为它不需要 API、也不改文件。
+        """
+        from unittest import mock
+        from vedio.stages import ledger as L
+
+        class FakeResult:
+            ok = True
+            status = "done"
+            path = None
+
+            def as_dict(self):
+                return {"status": "done", "path": None, "message": "写好了", "rows": 3}
+
+        def noisy(*args, **kwargs):
+            for i in range(5):
+                print(f"过程输出 {i}：模型正在吐第 {i} 行")
+            return FakeResult()
+
+        with mock.patch.object(L, "build_ledger", noisy):
+            return self.run_cli("ledger", *self.base(), *extra)
+
+    def run_log(self) -> str:
+        logs = list((self.root / "log").glob("run-ledger-*.log"))
+        self.assertEqual(len(logs), 1, f"应该有且只有一个 run 日志，实际 {logs}")
+        return logs[0].read_text(encoding="utf-8")
+
+    def test_quiet_keeps_result_but_hides_process(self):
+        code, out, err = self.noisy_verb("--quiet")
+        self.assertEqual(code, 0, err)
+        self.assertIn("写好了", out)             # 结论还在
+        self.assertNotIn("过程输出", out)        # 过程不见了
+        self.assertNotIn("过程输出", err)        # stderr 也不该有
+        self.assertIn("过程输出", self.run_log())  # 但日志里一行不少
+
+    def test_json_implies_quiet(self):
+        code, out, err = self.noisy_verb("--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["status"], "done")   # stdout 纯 JSON
+        self.assertNotIn("过程输出", out)
+        self.assertNotIn("过程输出", err)                     # 不像以前那样"赶到 stderr"
+        self.assertIn("过程输出", self.run_log())
+
+    def test_without_flag_process_is_visible(self):
+        """默认行为不变 —— 人手动跑要看得见进度，否则 4 分钟像死进程"""
+        code, out, err = self.noisy_verb()
+        self.assertIn("过程输出", out)
+
+    def test_quiet_still_records_result_in_log(self):
+        """安静模式下结果绕过了 capture 的 tee，必须手动补进日志"""
+        self.noisy_verb("--quiet")
+        log = self.run_log()
+        self.assertIn("写好了", log)
+
+    def test_quiet_error_goes_to_console(self):
+        """出错也要让人看见 —— 静音只针对过程，不针对错误"""
+        code, out, err = self.run_cli("paths", *self.base(),
+                                      "--collection", "合集九", "--quiet")
+        self.assertEqual(code, cli.EXIT_FAIL)
+        self.assertIn("合集九", err)
+
+    def test_quiet_json_error_is_parseable(self):
+        code, out, err = self.run_cli("paths", *self.base(),
+                                      "--collection", "合集九", "--quiet", "--json")
+        self.assertEqual(code, cli.EXIT_FAIL)
+        self.assertEqual(json.loads(err)["error"], "collection_not_found")
 
 
 if __name__ == "__main__":

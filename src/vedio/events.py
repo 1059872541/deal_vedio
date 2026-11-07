@@ -142,6 +142,64 @@ class Event:
         return " ".join(parts)
 
 
+#: 当前打开的 capture 文件句柄。
+#:
+#: 为什么需要：`--quiet` 时 `sys.stdout` 被换成只写文件的流，而**结果**（JSON/表格）
+#: 必须走到真实 stdout 上才不会被吞。那条路绕过了 capture 的 tee，于是结果就
+#: 不进日志了 —— 这里留个出口，让结果能同时补写进日志。
+_ACTIVE_CAPTURES: list[TextIO] = []
+
+
+def write_to_captures(text: str) -> bool:
+    """把文本补写进当前所有打开的 capture 日志。没有就返回 False。"""
+    wrote = False
+    for handle in list(_ACTIVE_CAPTURES):
+        try:
+            handle.write(_strip_ansi(text))
+            handle.flush()
+            wrote = True
+        except (OSError, ValueError):
+            pass
+    return wrote
+
+
+class _FileOnly:
+    """只写日志文件，不回到控制台。
+
+    `--quiet` 用它：过程（模型的流式输出、旧代码的 print）只进日志，
+    控制台只留结论。与 `_Tee` 的区别就是**不回显**。
+
+    `proxy` 是原来的流，用来兜住 `encoding` / `isatty` 这类属性 ——
+    子进程或库拿到它会问这些，缺了会崩。
+    """
+
+    def __init__(self, handle: TextIO, proxy: TextIO) -> None:
+        self._handle = handle
+        self._proxy = proxy
+
+    def write(self, data: str) -> int:
+        try:
+            self._handle.write(_strip_ansi(data))
+            self._handle.flush()
+        except (OSError, ValueError):
+            pass
+        # 链式转发：如果外层本身也是"写日志"的流（嵌套 capture），继续往上写，
+        # 这样内层合集的输出也会出现在外层的整次调用日志里。
+        # 但如果外层是真控制台，就到此为止 —— 那才是"安静"。
+        if isinstance(self._proxy, (_Tee, _FileOnly)):
+            self._proxy.write(data)
+        return len(data)
+
+    def flush(self) -> None:
+        try:
+            self._handle.flush()
+        except (OSError, ValueError):
+            pass
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self._proxy, item)
+
+
 class EventLog:
     """一个批次的运行记录器。
 
@@ -227,12 +285,19 @@ class EventLog:
                       seconds=round(self._clock() - started, 1), **fields)
 
     @contextmanager
-    def capture(self, name: str, collection: Optional[str] = None) -> Iterator[Path]:
+    def capture(self, name: str, collection: Optional[str] = None,
+                echo: bool = True) -> Iterator[Path]:
         """把这段工作里的 stdout / stderr 原样存到文件。
 
         给"会自己 print 一堆东西"的旧代码用：剪映控制器、LangGraph agent、
         流式输出的模型回复。它们的输出去不了 `events.jsonl`（那是结构化的），
         又不能不存 —— 出问题时唯一能看的就是它。
+
+        Args:
+            echo: True（默认）= 照常回显到控制台，同时存文件；
+                  False = 只存文件，控制台一个字节都不出。
+                  这是 `--quiet` 的实现 —— 注意**不能**用"改道到 stderr"来假装安静，
+                  因为调用方的"工具结果"同时收 stdout 和 stderr。
 
         Yields:
             日志文件路径（调用方把它写进事件里，方便日后回看）
@@ -244,11 +309,21 @@ class EventLog:
 
         handle = path.open("a", encoding="utf-8", newline="\n")
         old_out, old_err = sys.stdout, sys.stderr
+        if echo:
+            out: Any = _Tee(old_out, handle)
+            err: Any = _Tee(old_err, handle)
+        else:
+            out = _FileOnly(handle, old_out)
+            err = _FileOnly(handle, old_err)
         try:
-            sys.stdout = _Tee(old_out, handle)
-            sys.stderr = _Tee(old_err, handle)
+            sys.stdout, sys.stderr = out, err
+            _ACTIVE_CAPTURES.append(handle)
             yield path
         finally:
+            try:
+                _ACTIVE_CAPTURES.remove(handle)
+            except ValueError:
+                pass
             sys.stdout, sys.stderr = old_out, old_err
             handle.close()
 

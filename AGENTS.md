@@ -157,7 +157,24 @@ deepseek:
 ```
 
 所有动词**只收 `--game` / `--batch` / `--collections`，不收路径** —— 路径由目录约定推导。
-加 `--json` 得到结构化结果，字段名稳定；错误带 `error` 码和 `hint`。
+加 `--json` 得到结构化结果；错误带 `error` 码和 `hint`。
+
+**跑写类动词时加 `--quiet`**（`subtitle` / `export` / `splice` / `rename` / `ledger` / `run`）：
+
+```powershell
+vedio subtitle --game 我的世界 --batch 2026-12 --collections 合集一 --quiet
+```
+
+不加的话，模型流式吐的每一行纠正、每条 structlog 事件都会进你的上下文 ——
+一次 2 小时字幕能到两千多行，把上下文占满、还挤掉真正要看的结论。
+`--quiet` 之后控制台只剩结果表 + 日志路径（实测 6 行），过程全在 `log/` 里。
+
+加 `--json` 会自动带上 `--quiet`（机器模式本来就该安静），所以这两条等价：
+
+```powershell
+vedio subtitle ... --json
+vedio subtitle ... --json --quiet
+```
 
 用户说的话 → 你的动作：
 
