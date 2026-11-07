@@ -148,6 +148,78 @@ def cmd_export(args: argparse.Namespace, project: context.Project) -> int:
     return EXIT_OK if batch.ok else EXIT_FAIL
 
 
+# ─────────────────────────── 动词：init ───────────────────────────
+
+def cmd_init(args: argparse.Namespace, project: Optional[context.Project]) -> int:
+    """建批次（不需要先有批次，所以不打开 project）"""
+    from .stages import init as init_stage
+
+    overrides: dict[str, Any] = {}
+    for item in (args.set or []):
+        if "=" not in item:
+            return _fail("bad_override", f"--set 要写成 键=值，收到 {item!r}", args.json)
+        key, _, raw = item.partition("=")
+        overrides[key.strip()] = _parse_scalar(raw.strip())
+
+    try:
+        plan = init_stage.build_plan(
+            args.game, args.batch,
+            collections=args.collections,
+            host=args.host or "",
+            overrides=overrides,
+        )
+        if args.dry_run:
+            payload = {"ok": True, "dry_run": True, **plan.as_dict()}
+        else:
+            from .events import EventLog
+            log = EventLog(plan.batch_dir / "log")
+            payload = init_stage.apply(plan, log=log)
+    except init_stage.InitError as exc:
+        if args.json:
+            print(json.dumps(exc.as_dict(), ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"错误：{exc.message}", file=sys.stderr)
+            if exc.hint:
+                print(f"  {exc.hint}", file=sys.stderr)
+        return EXIT_FAIL
+
+    def render(p: dict) -> str:
+        verb = "将要创建" if p.get("dry_run") else "已创建"
+        lines = [f"{verb}批次 {p['name']}（{p['collections']} 合集）",
+                 f"  目录  {p['batch_dir']}"]
+        if p.get("dry_run"):
+            for d in p["dirs"]:
+                lines.append(f"    + {d}")
+            for f in p["files"]:
+                lines.append(f"    + {f}")
+        else:
+            lines.append(f"  新建目录 {p.get('created_dirs', 0)} 个")
+        lines.append("")
+        lines.append("下一步：把录屏放进 合集/合集X/素材/，录完跟我说一声。")
+        return "\n".join(lines)
+
+    _emit(payload, args.json, render)
+    return EXIT_OK
+
+
+def _parse_scalar(raw: str) -> Any:
+    """把 `--set duration.episode_body=450` 的值转成合适的类型"""
+    low = raw.lower()
+    if low in ("true", "false"):
+        return low == "true"
+    if low in ("null", "none", ""):
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        pass
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+    return raw
+
+
 # ─────────────────────────── 参数解析 ───────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -184,6 +256,15 @@ def build_parser() -> argparse.ArgumentParser:
                           help="即使 剪辑/ 里已有片子也重导")
     p_export.set_defaults(handler=cmd_export)
 
+    p_init = sub.add_parser("init", help="建批次（不需要批次已存在）")
+    add_common(p_init)
+    p_init.add_argument("--collections", type=int, default=1, help="建几个合集，默认 1")
+    p_init.add_argument("--host", help="主播名，进 meta.host（命名模板与台账都要用）")
+    p_init.add_argument("--set", action="append", metavar="键=值",
+                        help="覆盖规则里的一项，如 --set duration.episode_body=450；可重复")
+    p_init.add_argument("--dry-run", action="store_true", help="只算不建")
+    p_init.set_defaults(handler=cmd_init, needs_project=False)
+
     return parser
 
 
@@ -192,15 +273,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     as_json = getattr(args, "json", False)
-    try:
-        project = context.Project.open(args.game, args.batch)
-    except context.ContextError as exc:
-        return _fail(exc.code, exc.message, as_json, **exc.detail)
-
     handler = getattr(args, "handler", None)
     if handler is None:
         parser.print_help(sys.stderr)
         return EXIT_USAGE
+
+    # init 是"建批次"，此时批次还不存在 —— 不能先 Project.open
+    project: Optional[context.Project] = None
+    if getattr(args, "needs_project", True):
+        try:
+            project = context.Project.open(args.game, args.batch)
+        except context.ContextError as exc:
+            return _fail(exc.code, exc.message, as_json, **exc.detail)
+
     try:
         return handler(args, project)
     except context.ContextError as exc:
