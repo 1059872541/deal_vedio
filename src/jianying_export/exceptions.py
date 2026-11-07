@@ -35,6 +35,10 @@ class AutomationError(Exception):
     """自动化操作失败"""
     pass
 
-class ExportTimeout(Exception):
-    """导出超时"""
+class ExportTimeout(AutomationError):
+    """导出超时。
+
+    继承 AutomationError 而不是 Exception：超时本质上也是一种自动化失败，
+    调用方通常只需要 `except AutomationError` 一个分支就能覆盖。
+    """
     pass
