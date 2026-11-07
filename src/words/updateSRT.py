@@ -124,8 +124,13 @@ def main(base_dir):
         if output_lines and output_lines[-1] == '':
             output_lines.pop()
         
-        # 写入输出文件（使用剪映偏好的UTF-8带BOM编码）
-        with open(output_file, 'w', encoding='utf-8-sig') as f:
+        # 写入输出文件。
+        # 编码与换行都对齐**剪映自己导出的 srt**（实测样本 26-06-MC-合集一.srt）：
+        #   UTF-8 无 BOM、CRLF。
+        # 旧版这里写的是 utf-8-sig（带 BOM），来自当初"剪映要求 BOM"的猜测；
+        # 但剪映自己导出的文件根本没有 BOM（前 3 字节是 "1\r\n" 不是 EF BB BF），
+        # 所以改为不带 BOM。若剪映导入异常，再改回 utf-8-sig 并记录结论。
+        with open(output_file, 'w', encoding='utf-8', newline='\r\n') as f:
             f.write('\n'.join(output_lines))
         
         print(f"处理完成，输出文件: {output_file}")

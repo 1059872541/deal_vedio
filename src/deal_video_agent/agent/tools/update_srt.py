@@ -108,8 +108,9 @@ class UpdateSRT_tool:
         while output_lines and output_lines[-1] == '':
             output_lines.pop()
         
-        # 写入输出文件
-        with open(output_file, 'w', encoding='utf-8-sig') as f:
+        # 写入输出文件：UTF-8 无 BOM + CRLF，对齐剪映自己导出的 srt。
+        # （旧版写 utf-8-sig 带 BOM，是"剪映要求 BOM"的猜测，实测剪映自己导出的没 BOM）
+        with open(output_file, 'w', encoding='utf-8', newline='\r\n') as f:
             f.write('\n'.join(output_lines))
 
 
