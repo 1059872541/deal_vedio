@@ -251,11 +251,11 @@ class TestLedger(Base):
         self.assertIsInstance(col["videos"][0]["duration"], int)
         self.assertIsInstance(col["total_duration"], int)
 
-    def test_output_named_for_delivery(self):
-        """文件名按交付规范：26年{主播}{月}月第一批片单.xlsx"""
-        target = L.ledger_target(self.p, month=12)
+    def test_output_in_batch_dir(self):
+        """台账放在批次目录，月份取批次名（2026-12 → 12 月）"""
+        target = L.ledger_target(self.p)
         self.assertEqual(target.name, "26年波波12月第一批片单.xlsx")
-        self.assertEqual(target.parent.name, "2026")
+        self.assertEqual(target.parent, self.p.batch_dir)
 
     def test_existing_file_skipped(self):
         self.prep()

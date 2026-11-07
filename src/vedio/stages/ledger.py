@@ -266,15 +266,30 @@ DESC_SYSTEM_DEFAULT = """\
 {"intro": "...", "keywords": "..."}
 
 要求：
-- intro：20~40 个汉字，概括这一合集的内容走向。用中文标点，**以句号结尾**
-- keywords：4~6 个关键词，**用顿号「、」分隔**，不加书名号、不加空格
+- intro：以「{主播}」开头作为主语，20~40 个汉字，概括这一合集的内容走向。
+  用中文标点，以句号结尾
+- 同一系列可能有上篇/下篇：下篇的开头要体现「接着上篇往下」的递进，
+  不要重复上篇已经讲过的内容
+- keywords：4~6 个关键词，用顿号「、」分隔，不加书名号、不加空格。
+  **不能和已用关键词重复**（下面会给出清单），换个角度描述同一个意思
 """
 
 
-def build_desc_prompt(project: Project, collection: str, titles: list[str]) -> str:
+def build_desc_prompt(project: Project, collection: str, titles: list[str],
+                      used_keywords: Optional[list[str]] = None,
+                      prev_collection: str = "",
+                      prev_intro: str = "") -> str:
+    """拼给模型的输入：标题 + 主播 + 已用关键词 + 上篇简介。"""
     full = project.titles.full_collection_name(collection) or collection
     lines = "\n".join(f"{i}. {t}" for i, t in enumerate(titles, 1))
-    return f"合集：{full}\n集数：{len(titles)}\n\n每集标题：\n{lines}"
+    parts = [f"合集：{full}", f"集数：{len(titles)}", f"主播：{project.host or ''}", ""]
+    if prev_intro:
+        parts.append(f"上一篇（{prev_collection}）的内容介绍：\n{prev_intro}")
+        parts.append("这一篇要接着它往下写，体现递进，别重复它的内容。\n")
+    if used_keywords:
+        parts.append("已用关键词（这些不能再用）：" + "、".join(used_keywords) + "\n")
+    parts.append("每集标题：\n" + lines)
+    return "\n".join(parts)
 
 
 def normalize_intro(text: str) -> str:
@@ -295,21 +310,47 @@ def normalize_keywords(text: str) -> str:
     return "、".join(p for p in parts if p)
 
 
+def dedupe_keywords(keywords: str, used: set[str]) -> tuple[str, list[str]]:
+    """去掉与已用关键词重复的。返回 (新的串, 被丢掉的词)。"""
+    kept: list[str] = []
+    dropped: list[str] = []
+    for word in keywords.split("、"):
+        word = word.strip()
+        if not word:
+            continue
+        if word in used:
+            dropped.append(word)
+            continue
+        used.add(word)
+        kept.append(word)
+    return "、".join(kept), dropped
+
+
 def generate_copy(project: Project, collection: str, titles: list[str],
-                  client: Optional[object] = None) -> tuple[str, str]:
+                  client: Optional[object] = None,
+                  used_keywords: Optional[list[str]] = None,
+                  prev_collection: str = "",
+                  prev_intro: str = "") -> tuple[str, str]:
     """让模型生成 (内容介绍, 关键字)。失败返回 ("", "")，不让它拖垮台账。"""
     if not titles:
         return "", ""
-    from .. import context as _ctx
-    system_prompt = _ctx.load_prompt("ledger_copy", DESC_SYSTEM_DEFAULT,
-                                     game=project.game)
     if client is None:
         try:
             from deal_video_agent.agent.tools.deepseek_api import DeepSeekClient
             client = DeepSeekClient()
         except Exception:
             return "", ""
-    prompt = build_desc_prompt(project, collection, titles)
+
+    from .. import context as _ctx
+    system_prompt = _ctx.load_prompt("ledger_copy", DESC_SYSTEM_DEFAULT,
+                                     game=project.game)
+    # 占位符用「{字符串}」而不是 str.format：提示词里的 JSON 例子自带花括号
+    system_prompt = system_prompt.replace("{主播}", project.host or "主播")
+
+    prompt = build_desc_prompt(project, collection, titles,
+                               used_keywords=used_keywords,
+                               prev_collection=prev_collection,
+                               prev_intro=prev_intro)
     try:
         text, _usage = client.chat(system_prompt, prompt)   # type: ignore[attr-defined]
     except Exception:
@@ -333,62 +374,149 @@ def generate_copy(project: Project, collection: str, titles: list[str],
 
 def fill_ai_columns(path: Path, blocks: list[tuple[int, int, str, list[str]]],
                     project: Project, client: Optional[object] = None) -> list[str]:
-    """把内容介绍/关键字写进 K/L 列。返回逐条失败说明。
+    """写 K/L 两列。返回逐条问题说明。
 
-    Args:
-        blocks: [(起始行, 行数, 合集名, 标题列表), ...] —— 顺序必须与生成时一致
-                （数据从第 5 行起，每合集占 video_count 行）
-
-    K/L 在生成脚本里是合并单元格，所以只能写每块的第一行。
+    顺序很重要：**按合集顺序生成**，因为下篇要接着上篇写、关键词要全局去重。
     """
     from openpyxl import load_workbook
 
     problems: list[str] = []
+    record = load_entries_record(project)
+    used: set[str] = set()
+    for entry in record.values():
+        for word in str(entry.get("keywords") or "").split("、"):
+            if word.strip():
+                used.add(word.strip())
+
     wb = load_workbook(str(path))
     ws = wb.active
+    prev_collection = ""
+    prev_intro = ""
+
     for start_row, count, name, titles in blocks:
-        intro, keywords = generate_copy(project, name, titles, client=client)
+        intro, keywords = generate_copy(
+            project, name, titles, client=client,
+            used_keywords=sorted(used),
+            prev_collection=prev_collection, prev_intro=prev_intro,
+        )
         if not intro and not keywords:
             problems.append(f"{name}: 内容介绍/关键字没生成出来")
             continue
+
+        keywords, dropped = dedupe_keywords(keywords, used)
+        if dropped:
+            problems.append(f"{name}: 去掉了重复关键词（{'、'.join(dropped)}）")
+
         ws.cell(row=start_row, column=11, value=intro)      # K
         ws.cell(row=start_row, column=12, value=keywords)   # L
+
         if not (20 <= len(intro) <= 40):
             problems.append(f"{name}: 内容介绍 {len(intro)} 字（要求 20~40）")
         n_kw = len([k for k in keywords.split("、") if k])
-        if not (4 <= n_kw <= 6):
-            problems.append(f"{name}: 关键字 {n_kw} 个（要求 4~6）")
+        if n_kw < 4:
+            problems.append(f"{name}: 去重后只剩 {n_kw} 个关键词（要求 4~6）")
+
+        record[name] = {"intro": intro, "keywords": keywords}
+        prev_collection, prev_intro = name, intro
+
     wb.save(str(path))
+    save_entries_record(project, record)
     return problems
-    """交付用的台账路径：`{ledger_root}/{year}/26年{host}{month}月第一批片单.xlsx`。
 
-    台账是**交付物**，不属于某个批次 —— 同一个月几批共用一份命名规则。
 
-    **不做自动改名**（`_1`、`_2` 那种）：那样每跑一次夜里任务就多一份表，
-    人还得自己去分辨哪份是最终版。存在就跳过，要重写就 `--force`。
+def _batch_month(project: Project, fallback: Optional[int] = None) -> int:
+    """从批次名取月份：`2026-12` → 12。取不到用当前月。"""
+    import re as _re
+
+    m = _re.search(r"(\d{4})-(\d{2})$", str(getattr(project, "batch", "") or ""))
+    if m:
+        return int(m.group(2))
+    return fallback or int(time.strftime("%m"))
+
+
+def entries_record_path(project: Project) -> Path:
+    """同批次已出过的「内容介绍 / 关键字」记录。
+
+    为什么需要：一个批次里几个合集是同一系列（上篇/下篇），关键词不能撞车。
+    每次生成前读它、生成后写回，下一批才知道哪些词已经用过了。
     """
-    local = getattr(project, "local", None)
-    root = getattr(local, "ledger_root", None) or (project.batch_dir / "台账")
-    year = int(project.rule("meta.year", 2026) or 2026)
-    host = project.host or ""
-    month = month or int(time.strftime("%m"))
-    return Path(root) / str(year) / f"{year % 100}年{host}{month}月第一批片单.xlsx"
+    return Path(project.batch_dir) / "台账记录.json"
+
+
+def load_entries_record(project: Project) -> dict[str, dict[str, str]]:
+    """读已有记录：{合集名: {"intro": ..., "keywords": ...}}"""
+    import json
+
+    path = entries_record_path(project)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_entries_record(project: Project, entries: dict[str, dict[str, str]]) -> None:
+    import json
+
+    path = entries_record_path(project)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(entries, ensure_ascii=False, indent=2),
+                        encoding="utf-8", newline="\n")
+    except OSError:
+        pass
 
 
 def ledger_target(project: Project, month: Optional[int] = None) -> Path:
-    """交付用的台账路径：`{ledger_root}/{year}/26年{host}{month}月第一批片单.xlsx`。
+    """台账就放在**批次目录**里：`{批次}/26年{主播}{月}月第一批片单.xlsx`。
 
-    台账是**交付物**，不属于某个批次 —— 同一个月几批共用一份命名规则。
+    用户明确要求放批次目录 —— 台账和这个批次的成片、标题、进度是一套东西，
+    散到交付目录反而对不上号。
 
-    **不做自动改名**（`_1`、`_2` 那种）：那样每跑一次夜里任务就多一份表，
-    人还得自己去分辨哪份是最终版。存在就跳过，要重写就 `--force`。
+    月份取**批次月份**（`我的世界-2026-12` → 12），不是当前月份：
+    12 月的批次在 11 月做，台账也该叫 12 月。
     """
-    local = getattr(project, "local", None)
-    root = getattr(local, "ledger_root", None) or (project.batch_dir / "台账")
     year = int(project.rule("meta.year", 2026) or 2026)
     host = project.host or ""
-    month = month or int(time.strftime("%m"))
-    return Path(root) / str(year) / f"{year % 100}年{host}{month}月第一批片单.xlsx"
+    month = month or _batch_month(project)
+    return Path(project.batch_dir) / f"{year % 100}年{host}{month}月第一批片单.xlsx"
+
+
+def entries_record_path(project: Project) -> Path:
+    """同批次已出过的「内容介绍 / 关键字」记录。
+
+    为什么需要：一个批次里几个合集是同一系列（上篇/下篇），关键词不能撞车。
+    每次生成前读它、生成后写回，下一批才知道哪些词已经用过了。
+    """
+    return Path(project.batch_dir) / "台账记录.json"
+
+
+def load_entries_record(project: Project) -> dict[str, dict[str, str]]:
+    """读已有记录：{合集名: {"intro": ..., "keywords": ...}}"""
+    import json
+
+    path = entries_record_path(project)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_entries_record(project: Project, entries: dict[str, dict[str, str]]) -> None:
+    import json
+
+    path = entries_record_path(project)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(entries, ensure_ascii=False, indent=2),
+                        encoding="utf-8", newline="\n")
+    except OSError:
+        pass
 
 
 def write_workbook(path: Path, rows: list[LedgerRow], project: Project) -> None:

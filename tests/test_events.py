@@ -98,10 +98,12 @@ class TestStep(TempCase):
         log = self.make(clock=clock)
         with log.step("export", "合集一"):
             pass
-        kinds = [e.event for e in log.read()]
-        self.assertEqual(kinds, [E.START, E.DONE])
-        done = log.read()[-1]
-        self.assertEqual(done.fields["seconds"], 7.0)
+        events = log.read()
+        self.assertEqual([e.event for e in events], [E.START, E.DONE])
+        # 每次 emit 会读一次时钟拿时间戳（事件本来就该带时间），
+        # 所以 step 内部一共读 3 次：start → emit(start) → emit(done)。
+        # FakeClock 每次前进 7 秒，故耗时为 14。
+        self.assertEqual(events[-1].fields["seconds"], 14.0)
 
     def test_failure_records_fail_and_reraises(self):
         clock = FakeClock(step=1.0)

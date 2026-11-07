@@ -231,6 +231,10 @@ class EventLog:
              **fields: Any) -> Event:
         """记一条事件（同时写人读日志和 JSONL）"""
         ev = Event(verb=verb, event=event, collection=collection, fields=fields)
+        # ts 必须来自注入的时钟，不能用 Event 默认的真实时间 ——
+        # 否则测试里（假时钟 11-07）事件按真实日期（可能已跨零点成 11-08）落盘，
+        # human_path() 却按假时钟算文件名，两边对不上，读不到文件。
+        ev.ts = _iso(self._clock())
         self._append_jsonl(ev)
         self._append_human(ev)
         self._append_history(ev)
