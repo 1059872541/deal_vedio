@@ -110,11 +110,17 @@ class LedgerResult:
 # ─────────────────────────── 取数 ───────────────────────────
 
 def intro_seconds(project: Project, collection: Collection) -> float:
-    """这个合集的片头有多长（没登记就是 0）"""
-    path = project.intro_for(collection.name)
-    if path is None or not Path(path).is_file():
-        return 0.0
-    return media.probe_duration(project.ffprobe, Path(path))
+    """台账里的「片头时长」——**合同值**，不是片头文件的实际长度。
+
+    甲方按「集数 × 每集 30 秒」算片头额度（20 集 → 600 秒），
+    和实际拼进去的片头文件（本批 57.5 秒）无关。
+    实际交付只能多不能少，所以台账照合同值减。
+
+    配置：`duration.intro_per_episode`（默认 30 秒）。
+    """
+    per_episode = float(project.rule("duration.intro_per_episode", 30) or 30)
+    episodes = float(project.episode_count or 0)
+    return round(per_episode * episodes, 1)
 
 
 def collect_rows(project: Project, collections: Optional[list[str]] = None

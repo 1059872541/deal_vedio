@@ -27,6 +27,8 @@ duration:
   episode_body: 360 # 每个短片的「正文」时长 = 6 分钟（不含片头片尾）
   episode_count: 20 # 每个合集的集数
   segment_tolerance: 3 # 关键帧对齐容差 ±3 秒
+  # 台账「片头时长」按合同算：集数 × 每集 30 秒（20 集 → 600 秒）
+  intro_per_episode: 30
 
 # ── 视频导出参数（剪映「视频导出」面板上的 5 项）──
 export:

@@ -206,8 +206,9 @@ class TestLedger(Base):
         self.assertEqual(rows[0].episode, 1)
         self.assertEqual(rows[0].title, "林中小屋初探")
         self.assertAlmostEqual(rows[0].seconds, 401.0)
-        self.assertAlmostEqual(rows[0].intro_seconds, 30.0)
-        self.assertAlmostEqual(rows[0].without_intro, 371.0)
+        # 片头按合同算：集数(3) x 每集 30 秒 = 90，不是片头文件的 30 秒
+        self.assertAlmostEqual(rows[0].intro_seconds, 90.0)
+        self.assertAlmostEqual(rows[0].without_intro, 311.0)
         # 合集时长 = 三集之和
         self.assertAlmostEqual(rows[0].collection_seconds, 401 + 402 + 403)
 
