@@ -107,15 +107,24 @@ workspace:
 
 ## §2 日常交互
 
+**命令怎么跑**：仓库根目录有 `vedio.bat`，也可以直接
+
+```powershell
+.venv\Scripts\python vedio.py <动词> --game <游戏> --batch <批次> [...]
+```
+
+所有动词**只收 `--game` / `--batch` / `--collections`，不收路径** —— 路径由目录约定推导。
+加 `--json` 得到结构化结果，字段名稳定；错误带 `error` 码和 `hint`。
+
 用户说的话 → 你的动作：
 
 | 用户说 | 你做 |
 |---|---|
-| 「我要做 X 游戏的视频」 | 走 §3 建批次流程 |
-| 「现在什么情况」/「进度怎么样」 | `vedio status`，然后画进度表（§5） |
-| 「今晚把这些跑完」 | `vedio run --game ... --batch ... --collections ... --steps ...` |
-| 「字幕审完了，导吧」 | `vedio export`（**这句话本身就是审批信号**，不要问"确认吗") |
-| 「合集三剪好了」 | `vedio asr --game ... --collection 合集三` |
+| 「我要做 X 游戏的视频」 | 走 §3 建批次流程（`vedio init`） |
+| 「现在什么情况」/「进度怎么样」 | `vedio status`，然后把表贴给他（§5） |
+| 「今晚把这些跑完」 | `vedio run --steps export,splice,rename,ledger --collections ...` |
+| 「字幕审完了，导吧」 | `vedio export`（**这句话本身就是审批信号**，不要问"确认吗"） |
+| 「合集三剪好了，导出字幕了」 | `vedio subtitle --collections 合集三` |
 | 「出错了 / 卡住了」 | `vedio status --json`，读 `error`，用中文解释，给「重试 / 跳过 / 先停下」三个选项 |
 
 ---
@@ -263,8 +272,36 @@ Get-ChildItem "<workspace.root>" -Directory
 
 ## 当前开发状态
 
-`vedio` 命令行**尚未实现**。若用户要求执行，如实告诉他：
+`vedio` 命令行**已可用**，九个动词：
 
-> 这部分还在开发中。现在能做的只有：查看设计文档（`docs/目标架构.md`、`docs/流水线现状.md`）和调整规则（`conf/`）。
+| 动词 | 干什么 | 会改文件吗 |
+|---|---|---|
+| `paths` | 看目录在哪 | 否 |
+| `status` | 批次进度表 | 否 |
+| `init` | 建批次（建目录树 + 三个文件） | 是 |
+| `subtitle` | 字幕三步：加行号 / 纠错 / 回写 srt | 是 |
+| `export` | 批量导出剪映草稿（会点剪映） | 是 |
+| `splice` | 切分长片 + 拼片头片尾（跑 ffmpeg） | 是 |
+| `rename` | 按 `标题.md` 给成片改名 | 是 |
+| `ledger` | 生成台账 xlsx | 是 |
+| `run` | 按 `--steps` 推进（可夜里跑） | 是 |
 
-不要模拟执行结果。
+```powershell
+vedio status --game 我的世界 --batch 2026-12
+vedio run --game 我的世界 --batch 2026-12 --collections 合集一,合集二 --steps export,splice,rename,ledger
+```
+
+**还没做的**：
+
+| 缺什么 | 现状 |
+|---|---|
+| `series`（给一组合集起篇名 + 上下篇） | 没写。`标题.md` 里的副标题目前要人手工加；`rename` 缺副标题会停下提示 |
+| 字幕纠错的"完成判定" | 做不到（剪映不暴露进度）。`subtitle` 要等 agent 跑完才返回 |
+| 台账 B / K / L 三列 | 留空。内容来源没定（人工写还是模型从字幕生成） |
+| `balance`（匀素材） | 仍是独立脚本 `src/util/balance.py`，没并进 `vedio`。用法见 §5.1 |
+| 网盘上传 | 排除在范围外 |
+
+**如实告诉用户的时机**：某个动词报 `error` 时，不要把失败说成成功。
+`--json` 里的 `error` 码就是给人话解释用的
+（`draft_not_found` → 「剪映里没找到这个草稿，是不是改名了？」）。
+

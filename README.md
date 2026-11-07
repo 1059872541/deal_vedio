@@ -21,6 +21,30 @@
    - 「现在什么情况」
    - 「今晚把这几个合集跑完」
 
+### 命令一览（给知道自己在干什么的人）
+
+仓库根目录有 `vedio.bat`，也可以 `.venv\Scripts\python vedio.py`。
+所有动词**只收 `--game` / `--batch` / `--collections`，不收路径**。
+
+| 动词 | 干什么 |
+|---|---|
+| `vedio paths` | 看目录在哪（只读） |
+| `vedio status` | 批次进度表（只读） |
+| `vedio init` | 建批次 |
+| `vedio subtitle` | 字幕三步：加行号 / 纠错 / 回写 srt |
+| `vedio export` | 批量导出剪映草稿 |
+| `vedio splice` | 切分长片 + 拼片头片尾 |
+| `vedio rename` | 按 `标题.md` 给成片改名 |
+| `vedio ledger` | 生成台账 xlsx |
+| `vedio run` | 按 `--steps` 推进（可夜里跑） |
+
+```powershell
+vedio status --game 我的世界 --batch 2026-12
+vedio run --game 我的世界 --batch 2026-12 --collections 合集一,合集二 --steps export,splice,rename,ledger
+```
+
+加 `--json` 得到结构化结果；错误带 `error` 码和 `hint`。
+
 AI 会读 [`AGENTS.md`](AGENTS.md) 知道该干什么，然后引导你。
 
 ---
