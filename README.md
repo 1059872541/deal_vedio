@@ -170,8 +170,6 @@ deal_vedio/
     │   ├── agent/tools/       # deepseek_api / knowledge_base / titles_manager
     │   │                      # add_line_order / update_srt
     │   ├── prompts/           # 提示词模板（YAML，支持按游戏覆写）
-    │   ├── knowledge_base/    # 术语库（按游戏分目录）
-    │   ├── titles/            # 已生成的标题（按游戏+月份分文件）
     │   └── monitor_subtitle.py
     │
     ├── jianying_export/       # 剪映 uiautomation 自动化导出
@@ -196,8 +194,7 @@ deal_vedio/
 
 - 模型：DeepSeek（`deepseek-v4-pro`），Context Caching 降低约 90% 输入成本
 - 提示词按游戏覆写：`prompts/games/{游戏名}.yaml` 存在则覆盖 `prompts/subtitle_correction.yaml` 的同名字段
-- 知识库两层结构：`knowledge_base/{游戏名}/{主题}.md`
-- 标题按游戏隔离：`titles/{游戏名}_titles.md`
+- 知识库是**游戏级资产**：`conf/知识库/{游戏名}/{主题}.md`（跨批次复用，跟着规则入库）
 
 ```bash
 # 交互模式

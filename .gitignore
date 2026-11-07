@@ -34,6 +34,14 @@ title_compare/
 conf/本机.yaml
 conf/本机能力.yaml
 
+# ---- 旧模块自动生成的数据目录 ----
+# 这两个目录曾经被 git 跟踪，是"用户数据进代码仓库"的典型：
+#   titles/          → 批次产出（标题），应写到工作区 {批次}/标题.md
+#   knowledge_base/  → 游戏级字典库，已迁到 conf/知识库/ 并入库
+# 保留忽略规则，防止旧流程运行时又把它们写回代码目录。
+src/deal_video_agent/titles/
+src/deal_video_agent/knowledge_base/
+
 # ---- 研究记录，不入库 ----
 # research/ 放的是我们自己研究、探测、诊断的产物：
 #   剪映 GUI 自动化的实测结论、流水线诊断、被推翻的假设、复现脚本……

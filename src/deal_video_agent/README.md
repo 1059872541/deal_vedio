@@ -27,10 +27,6 @@ deal_video_agent/
 ├── prompts/
 │   ├── subtitle_correction.yaml    # 通用提示词模板（3 个用途字段）
 │   └── games/{游戏名}.yaml          # 按游戏覆写指定字段
-├── knowledge_base/
-│   └── {游戏名}/{主题}.md           # 术语库，两层结构
-├── titles/
-│   └── {游戏名}_titles.md           # 标题按游戏隔离
 └── agent/
     ├── state.py                    # 状态定义
     ├── nodes.py                    # 7 个节点实现
@@ -145,11 +141,16 @@ python src/deal_video_agent/monitor_subtitle.py --dir "<目录>" --now
 
 若存在 `prompts/games/{游戏名}.yaml`，其中出现的字段会覆盖通用模板的同名字段，未出现的自动继承。新增游戏只加一个 YAML，Python 代码不动。
 
-**知识库**两层结构：`knowledge_base/{游戏名}/{主题}.md`。游戏名会先用正则 `-\d{4}(?:-\d{2})?$` 去掉日期后缀，让同一游戏不同批次共享术语库。
+**知识库**存放在 `conf/知识库/{游戏名}/{主题}.md`（游戏级资产，跟着规则入库；换机器 clone 后必须还在）。
+游戏名会先用正则 `-\d{4}(?:-\d{2})?$` 去掉日期后缀，让同一游戏不同批次共享术语库。
 
 ## 标题文件
 
-按游戏隔离存放：`titles/{游戏名}_titles.md`（游戏名保留日期后缀，如 `我的世界-2026-06_titles.md`）。
+标题文件**不在本模块目录下**。旧实现写在 `titles/{游戏名}_titles.md`（代码仓库里），
+那是把批次产出混进代码；现在按架构应写到工作区的 `{批次}/标题.md`。
+
+当前 `titles_manager.py` 仍按调用方传入的 `title_file` 相对路径工作，
+但它已不再假设文件在代码目录里 —— 路径由调用方（未来的 `correct` 阶段）决定。
 
 ```markdown
 # 我的世界-2026-06系列视频标题列表

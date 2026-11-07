@@ -31,9 +31,12 @@ def _get_logger():
 
 # 配置路径
 SCRIPT_DIR = Path(__file__).parent.parent  # deal_video_agent 目录
+REPO_ROOT = SCRIPT_DIR.parent.parent       # 仓库根
 CONFIG_DIR = SCRIPT_DIR / "config.yaml"
 PROMPTS_DIR = SCRIPT_DIR / "prompts"       # 修正：deal_video_agent/prompts
-KNOWLEDGE_BASE_DIR = SCRIPT_DIR / "knowledge_base"
+#: 知识库是**游戏级资产**（跨批次复用的 ASR 易错词表），不是代码，
+#: 所以放 conf/知识库/{游戏}/，跟着规则一起入库；换机器 clone 后必须还在。
+KNOWLEDGE_BASE_DIR = REPO_ROOT / "conf" / "知识库"
 
 # 初始化工具
 _deepseek_client = None
