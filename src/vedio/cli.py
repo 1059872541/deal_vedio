@@ -120,6 +120,34 @@ def cmd_status(args: argparse.Namespace, project: context.Project) -> int:
     return EXIT_OK
 
 
+# ─────────────────────────── 动词：export ───────────────────────────
+
+def cmd_export(args: argparse.Namespace, project: context.Project) -> int:
+    """批量导出草稿（会点剪映，耗时最长）"""
+    from .events import EventLog
+    from .stages import export as export_stage
+
+    log = EventLog(project.log_dir)
+    batch = export_stage.export_drafts(
+        project,
+        _split_list(args.collections),
+        log=log,
+        force=args.force,
+    )
+    payload = batch.as_dict()
+
+    def render(p: dict) -> str:
+        lines = [f"导出 {p['total']} 个合集：成功 {p['done']}，跳过 {p['skipped']}，失败 {p['failed']}"]
+        for r in p["results"]:
+            mark = {"done": "✓", "skip": "·", "fail": "✗"}.get(r["status"], "?")
+            detail = r["message"] or ""
+            lines.append(f"  {mark} {r['collection']}  {detail}")
+        return "\n".join(lines)
+
+    _emit(payload, args.json, render)
+    return EXIT_OK if batch.ok else EXIT_FAIL
+
+
 # ─────────────────────────── 参数解析 ───────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -148,6 +176,13 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(p_status)
     p_status.add_argument("--collections", help="只看这些合集，逗号分隔；不传=全部")
     p_status.set_defaults(handler=cmd_status)
+
+    p_export = sub.add_parser("export", help="批量导出剪映草稿（会点剪映，耗时长）")
+    add_common(p_export)
+    p_export.add_argument("--collections", help="只导这些合集，逗号分隔；不传=全部")
+    p_export.add_argument("--force", action="store_true",
+                          help="即使 剪辑/ 里已有片子也重导")
+    p_export.set_defaults(handler=cmd_export)
 
     return parser
 
