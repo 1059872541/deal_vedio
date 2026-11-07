@@ -259,6 +259,32 @@ def cmd_subtitle(args: argparse.Namespace, project: context.Project) -> int:
     return EXIT_OK if payload["ok"] else EXIT_FAIL
 
 
+# ─────────────────────────── 动词：splice ───────────────────────────
+
+def cmd_splice(args: argparse.Namespace, project: context.Project) -> int:
+    """切分长片并拼片头片尾"""
+    from .events import EventLog
+    from .stages import splice as splice_stage
+
+    log = EventLog(project.log_dir)
+    results = splice_stage.splice_batch(project, _split_list(args.collections),
+                                        log=log, force=args.force)
+    payload = {
+        "ok": all(r.ok for r in results),
+        "results": [r.as_dict() for r in results],
+    }
+
+    def render(p: dict) -> str:
+        lines = []
+        for r in p["results"]:
+            mark = {"done": "✓", "skip": "·", "fail": "✗"}.get(r["status"], "?")
+            lines.append(f"  {mark} {r['collection']}  {r['message']}")
+        return "\n".join(lines) or "  （没有要做的）"
+
+    _emit(payload, args.json, render)
+    return EXIT_OK if payload["ok"] else EXIT_FAIL
+
+
 # ─────────────────────────── 参数解析 ───────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -312,6 +338,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_sub.add_argument("--prompt", help="纠错提示词（带【主题】可触发知识库）")
     p_sub.add_argument("--force", action="store_true", help="已有产出也重跑")
     p_sub.set_defaults(handler=cmd_subtitle)
+
+    p_splice = sub.add_parser("splice", help="切分长片并拼片头片尾（会跑 ffmpeg）")
+    add_common(p_splice)
+    p_splice.add_argument("--collections", help="只做这些合集，逗号分隔；不传=全部")
+    p_splice.add_argument("--force", action="store_true", help="已有成片也重做")
+    p_splice.set_defaults(handler=cmd_splice)
 
     return parser
 
