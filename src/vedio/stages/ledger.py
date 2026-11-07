@@ -381,11 +381,22 @@ def generate_copy(project: Project, collection: str, titles: list[str],
             normalize_keywords(str(data.get("keywords") or "")))
 
 
+def cjk_length(text: str) -> int:
+    """数字数（只数汉字，不含标点）。
+
+    甲方说「20~40 字」和模型自己数的都是**汉字**，不是字符数。
+    按 len() 算会把 6 个标点也算进去，导致 38 个字的合格文案被判成 44 字、
+    白白重试一轮还降不下来（实测踩过）。
+    """
+    return sum(1 for ch in (text or "") if "\u4e00" <= ch <= "\u9fff")
+
+
 def check_copy(intro: str, keywords: str, used: set[str]) -> list[str]:
     """校验内容介绍/关键字是否达标。返回问题清单（空 = 合格）。"""
     problems: list[str] = []
-    if not (20 <= len(intro) <= 40):
-        problems.append(f"内容介绍 {len(intro)} 字，必须 20~40 字")
+    n = cjk_length(intro)
+    if not (20 <= n <= 40):
+        problems.append(f"内容介绍 {n} 字，必须 20~40 字")
     fresh = [k for k in keywords.split("、") if k and k not in used]
     if len(fresh) < 4:
         problems.append(f"可用的新关键词只有 {len(fresh)} 个，必须 4~6 个")
