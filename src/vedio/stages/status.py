@@ -312,7 +312,7 @@ def render_next(status: BatchStatus) -> str:
     hints = {
         "素材": "继续录制，把素材放进 素材/",
         "剪辑": "在剪映里剪，剪完导出 .txt + .srt 到 剪辑/",
-        "字幕": "跑 subtitle；改完导入剪映审查，审完跑 export",
+        "字幕": "字幕已就绪：导入剪映审查，审完跑 export",
         "导出": "跑 splice（片头片尾要先齐）",
         "拼接": "跑 rename（按 标题.md 改名）",
         "命名": "跑 ledger（生成台账）",

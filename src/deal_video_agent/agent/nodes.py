@@ -5,6 +5,7 @@
 import os
 import re
 import time
+import difflib
 import functools
 from pathlib import Path
 from typing import Optional
@@ -19,6 +20,12 @@ from .tools import (
 )
 from .logger import get_logger, reset_logger
 
+
+#: 字幕纠错专用的模型。
+#: `deepseek-v4-pro` 是推理模型，在这条"只输出 数字:内容"的提示词上会把
+#: 全部 token 额度花在推理里、正文一个字都不吐（实测 8192 和 32768 都烧光，
+#: finish_reason=length、content 为空）。纠错是确定性任务，用非推理模型足够。
+CORRECTION_MODEL = "deepseek-chat"
 
 # ==================== 日志记录器 ====================
 
@@ -440,8 +447,63 @@ def correct_subtitle(state: SubtitleAgentState) -> SubtitleAgentState:
         response, usage = deepseek.stream_chat_with_progress(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
+            model=CORRECTION_MODEL,
             show_progress=True
         )
+
+        # 额度被推理吃光时 content 为空、finish_reason=length —— 必须报错，
+        # 否则会写出 0 字节 corrected.txt 却报告"纠正完成"。
+        if usage.get("finish_reason") == "length":
+            state.status = "error"
+            state.message = (f"字幕纠正输出被截断（completion_tokens="
+                             f"{usage.get('completion_tokens')}），结果不可用")
+            logger.log_error("correct_subtitle", state.message)
+            return state
+
+        # 只保留「行号:内容」行：模型偶尔会把分析过程混进正文，
+        # 这些行回写 srt 会把字幕改成一段议论文。
+        raw_lines = [line.strip() for line in response.splitlines() if line.strip()]
+        kept_lines = [line for line in raw_lines if re.match(r'^\d+\s*[:：]', line)]
+        if raw_lines and not kept_lines:
+            state.status = "error"
+            state.message = f"字幕纠正输出格式不符（{len(raw_lines)} 行没有一行是 行号:内容）"
+            logger.log_error("correct_subtitle", state.message)
+            return state
+
+        # 只留真正改过的行：模型经常把整篇原文照抄回来，
+        # 照抄的行回写 srt 等于没改，却让"改了几处"这个数字失真。
+        original = {}
+        for line in Path(ordered_file).read_text(encoding="utf-8").splitlines():
+            matched = re.match(r'^(\d+)\s*[:：](.*)$', line.strip())
+            if matched:
+                original[matched.group(1)] = matched.group(2).strip()
+
+        changed_lines = []
+        rejected = 0
+        for line in kept_lines:
+            matched = re.match(r'^(\d+)\s*[:：](.*)$', line)
+            if not matched:
+                continue
+            num, text = matched.group(1), matched.group(2).strip()
+            old = original.get(num)
+            if old == text:
+                continue
+            if old is None:
+                rejected += 1
+                continue
+            # 只接受"改几个字"：模型会顺手删语气词、甚至拿别的行来整句替换。
+            # 用相似度 + 长度比兜住，改得面目全非的一律不要。
+            ratio = difflib.SequenceMatcher(None, old, text).ratio()
+            if ratio < 0.7 or len(text) < len(old) * 0.8:
+                rejected += 1
+                continue
+            changed_lines.append(f"{num}:{text}")
+        response = "\n".join(changed_lines)
+        if rejected:
+            logger.log_error(
+                "correct_subtitle",
+                f"丢弃 {rejected} 条可疑纠正（删词/整句替换/相似度过低）"
+            )
 
         # 保存纠正结果
         output_dir = Path(ordered_file).parent
@@ -509,6 +571,18 @@ def generate_title(state: SubtitleAgentState) -> SubtitleAgentState:
     # 读取已有标题列表
     titles_manager = _get_titles_manager(game_name)
     existing_titles = titles_manager.read_all_titles()
+
+    # 这个合集已有标题就跳过：重跑字幕纠错不该把标题洗掉（标题是门面，
+    # 人工可能已经改过）。要重新生成就先清掉 titles/ 里该合集那一节。
+    collection_name = _extract_collection_name(state.target_dir)
+    existing_for_collection = titles_manager.get_collection_titles(collection_name)
+    if existing_for_collection:
+        state.generated_titles = existing_for_collection
+        state.message = f"{collection_name} 已有 {len(existing_for_collection)} 条标题，跳过重新生成"
+        logger.log_title_generation_complete(
+            titles_count=len(existing_for_collection), duplicate_count=0
+        )
+        return state
     
     # 加载标题生成提示词模板
     title_prompt_template = _load_prompt_template("title_generation", clean_name)
@@ -529,6 +603,22 @@ def generate_title(state: SubtitleAgentState) -> SubtitleAgentState:
             show_progress=True
         )
 
+        # 推理模型偶尔会把额度全烧在推理里、正文为空。退回非推理模型重试一次，
+        # 否则「0 条标题」会被当成"生成完成"，标题却再也没人重写。
+        if not response.strip():
+            print("[WARNING] 标题生成返回空内容，用非推理模型重试")
+            response, usage = deepseek.stream_chat_with_progress(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model=CORRECTION_MODEL,
+                show_progress=True
+            )
+            if not response.strip():
+                state.status = "error"
+                state.message = "标题生成返回空内容（两个模型都没输出）"
+                logger.log_error("generate_title", state.message)
+                return state
+
         # 解析标题列表
         titles = [line.strip() for line in response.strip().split('\n') if line.strip()]
         
@@ -545,9 +635,6 @@ def generate_title(state: SubtitleAgentState) -> SubtitleAgentState:
         # 如果有效标题不足20个，尝试补充
         if len(valid_titles) < 20:
             print(f"有效标题数量: {len(valid_titles)}，不足20个")
-        
-        # 从目录路径提取合集名称
-        collection_name = _extract_collection_name(state.target_dir)
         
         # 追加到标题文件（覆盖模式）
         if valid_titles:

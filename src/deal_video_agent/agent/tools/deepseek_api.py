@@ -100,18 +100,26 @@ class DeepSeekClient:
             stream_options={"include_usage": True}
         )
 
+        finish_reason = None
         for chunk in response:
             # 捕获 usage（最后一条 chunk 会携带）
             if hasattr(chunk, 'usage') and chunk.usage:
                 usage_data = self._extract_usage(chunk)
 
             # 提取内容（usage-only chunk 的 choices 为空）
-            if chunk.choices and chunk.choices[0].delta.content:
-                content = chunk.choices[0].delta.content
-                full_content += content
-                if on_chunk:
-                    on_chunk(content)
+            if chunk.choices:
+                choice = chunk.choices[0]
+                if choice.delta.content:
+                    content = choice.delta.content
+                    full_content += content
+                    if on_chunk:
+                        on_chunk(content)
+                # finish_reason 是判断"推理吃光额度、正文没吐出来"的唯一依据
+                if getattr(choice, 'finish_reason', None):
+                    finish_reason = choice.finish_reason
 
+        if finish_reason:
+            usage_data['finish_reason'] = finish_reason
         return full_content, usage_data
 
     def stream_chat_with_progress(
