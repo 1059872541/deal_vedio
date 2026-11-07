@@ -355,6 +355,28 @@ def cmd_run(args: argparse.Namespace, project: context.Project) -> int:
     return EXIT_OK if report.ok else EXIT_FAIL
 
 
+# ─────────────────────────── 动词：series ───────────────────────────
+
+def cmd_series(args: argparse.Namespace, project: context.Project) -> int:
+    """给一组合集定「篇名 + 上下篇」（rename 的前置）"""
+    from .events import EventLog
+    from .stages import series as series_stage
+
+    log = EventLog(project.log_dir)
+    result = series_stage.apply(project, args.groups, log=log, force=args.force)
+    payload = result.as_dict()
+
+    def render(p: dict) -> str:
+        mark = {"done": "✓", "skip": "·", "fail": "✗"}.get(p["status"], "?")
+        lines = [f"  {mark} {p['message']}"]
+        for name, subtitle in p["assignments"].items():
+            lines.append(f"      {name} → {subtitle}")
+        return "\n".join(lines)
+
+    _emit(payload, args.json, render)
+    return EXIT_OK if result.ok else EXIT_FAIL
+
+
 # ─────────────────────────── 参数解析 ───────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -433,6 +455,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--steps", default=",".join(run_step_names()),
                        help="要跑的步骤，逗号分隔")
     p_run.set_defaults(handler=cmd_run)
+
+    p_series = sub.add_parser("series", help="给一组合集定「篇名 + 上下篇」（rename 前置）")
+    add_common(p_series)
+    p_series.add_argument("--groups", required=True,
+                          help="分组写法：合集一,合集二=篇名;合集三=另一篇名")
+    p_series.add_argument("--force", action="store_true", help="副标题一样也重写")
+    p_series.set_defaults(handler=cmd_series)
 
     return parser
 

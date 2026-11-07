@@ -272,7 +272,7 @@ Get-ChildItem "<workspace.root>" -Directory
 
 ## 当前开发状态
 
-`vedio` 命令行**已可用**，九个动词：
+`vedio` 命令行**已可用**，十个动词：
 
 | 动词 | 干什么 | 会改文件吗 |
 |---|---|---|
@@ -285,17 +285,22 @@ Get-ChildItem "<workspace.root>" -Directory
 | `rename` | 按 `标题.md` 给成片改名 | 是 |
 | `ledger` | 生成台账 xlsx | 是 |
 | `run` | 按 `--steps` 推进（可夜里跑） | 是 |
+| `series` | 给一组合集定「篇名 + 上下篇」（`rename` 的前置） | 是 |
 
 ```powershell
 vedio status --game 我的世界 --batch 2026-12
+vedio series --game 我的世界 --batch 2026-12 --groups "合集一,合集二=收集强力变身"
 vedio run --game 我的世界 --batch 2026-12 --collections 合集一,合集二 --steps export,splice,rename,ledger
 ```
+
+**`series` 为什么不是 `run` 的一步**：篇名要人给（它是门面，定错了文件名、台账、
+网盘目录三处全错）。所以它单独跑，`run` 里不带它。
 
 **还没做的**：
 
 | 缺什么 | 现状 |
 |---|---|
-| `series`（给一组合集起篇名 + 上下篇） | 没写。`标题.md` 里的副标题目前要人手工加；`rename` 缺副标题会停下提示 |
+| 副标题自动起名 | `series` 只做"人给篇名、程序分组命名"。让模型起名看着省事，但篇名是门面，V1 不赌 |
 | 字幕纠错的"完成判定" | 做不到（剪映不暴露进度）。`subtitle` 要等 agent 跑完才返回 |
 | 台账 B / K / L 三列 | 留空。内容来源没定（人工写还是模型从字幕生成） |
 | `balance`（匀素材） | 仍是独立脚本 `src/util/balance.py`，没并进 `vedio`。用法见 §5.1 |

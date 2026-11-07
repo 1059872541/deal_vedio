@@ -37,9 +37,11 @@
 | `vedio rename` | 按 `标题.md` 给成片改名 |
 | `vedio ledger` | 生成台账 xlsx |
 | `vedio run` | 按 `--steps` 推进（可夜里跑） |
+| `vedio series` | 给一组合集定「篇名 + 上下篇」（`rename` 前置） |
 
 ```powershell
 vedio status --game 我的世界 --batch 2026-12
+vedio series --game 我的世界 --batch 2026-12 --groups "合集一,合集二=收集强力变身"
 vedio run --game 我的世界 --batch 2026-12 --collections 合集一,合集二 --steps export,splice,rename,ledger
 ```
 
