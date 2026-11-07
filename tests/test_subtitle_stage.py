@@ -217,6 +217,41 @@ class TestCorrect(SubCase):
         self.assertIn("崩之前最后一句",
                       (self.p.log_dir / log_file).read_text(encoding="utf-8"))
 
+    def test_points_legacy_logger_at_batch_log(self):
+        """旧 logger 默认往 src/logs 写，必须被指到批次 log/"""
+        self.write_txt()
+        with mock.patch.object(SUB, "_point_legacy_logger") as spy:
+            with mock.patch.object(SUB, "read_agent_titles", return_value=None):
+                SUB.correct(self.p, self.c, log=self.log, runner=self.fake_runner())
+        spy.assert_called_once_with(self.p.log_dir)
+
+    def test_legacy_logger_writes_into_batch_log(self):
+        """真跑一次旧 logger，文件必须落在批次 log/ 里"""
+        from deal_video_agent.agent import logger as agent_logger
+
+        self.write_txt()
+
+        def runner_with_logger(target_dir, prompt):
+            agent_logger.get_logger().start(target_dir, prompt)
+            agent_logger.get_logger().log_correct_subtitle_complete("corrected.txt", 7)
+            (Path(target_dir) / "corrected.txt").write_text("1:x\n", encoding="utf-8")
+            return {}
+
+        with mock.patch.object(SUB, "read_agent_titles", return_value=None):
+            with redirect_stdout(io.StringIO()):
+                r = SUB.correct(self.p, self.c, log=self.log, runner=runner_with_logger)
+        self.assertEqual(r.status, "done")
+
+        jsonl = list(self.p.log_dir.glob("agent-*.jsonl"))
+        self.assertEqual(len(jsonl), 1, f"应在 {self.p.log_dir} 里，实际: {list(self.p.log_dir.iterdir())}")
+        text = jsonl[0].read_text(encoding="utf-8")
+        self.assertIn("agent_start", text)
+        self.assertIn("correct_subtitle_complete", text)
+
+        # 不能把文件写到仓库里的 src/logs
+        self.assertFalse((SUB.__file__ and
+                          Path(SUB.__file__).resolve().parents[2] / "logs" / "agent-x.jsonl").exists())
+
     def test_runner_failure(self):
         self.write_txt()
 

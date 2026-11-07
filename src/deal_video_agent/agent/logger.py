@@ -14,35 +14,93 @@ from typing import Optional, Any
 import structlog
 
 
+class _TeeBoundLogger:
+    """把 structlog 的每条记录顺手写一份 JSONL。
+
+    为什么需要它：structlog 被配成 `PrintLoggerFactory()` —— 只往控制台打。
+    于是 `AgentLogger` 会建一个日志目录，却**从不往里面写任何东西**，
+    用户打开 `logs/` 看到空目录，以为"没有日志"。它的 `save_to_json()`
+    也从来没有被调用过。
+
+    现在每条记录都落到 `{log_dir}/agent-{run_id}.jsonl`，和控制台内容一致。
+    """
+
+    def __init__(self, inner, sink):
+        self._inner = inner
+        self._sink = sink
+
+    def _level(self, level: str, event: str, fields: dict):
+        try:
+            self._sink(level, event, fields)
+        except Exception:            # noqa: BLE001 - 写日志失败绝不能影响主流程
+            pass
+
+    def info(self, event, **kw):
+        self._level("info", event, kw)
+        return self._inner.info(event, **kw)
+
+    def warning(self, event, **kw):
+        self._level("warning", event, kw)
+        return self._inner.warning(event, **kw)
+
+    def error(self, event, **kw):
+        self._level("error", event, kw)
+        return self._inner.error(event, **kw)
+
+    def debug(self, event, **kw):
+        self._level("debug", event, kw)
+        return self._inner.debug(event, **kw)
+
+
+#: 进程级默认日志目录。
+#: `get_logger()` 不带参数时的去处。由 vedio 在跑批时设成批次的 `log/`。
+#:
+#: 为什么需要它：`nodes.py` 里每次运行都会 `reset_logger()` 再 `get_logger()`，
+#: 把外面设好的目录冲掉。只在调用处传参没用 —— 必须让"无参创建"也有正确默认值。
+_default_log_dir: Optional[Path] = None
+
+
+def set_default_log_dir(path) -> None:
+    """设置 `get_logger()` 不带参数时的默认目录（vedio 用它指向批次 log/）"""
+    global _default_log_dir
+    _default_log_dir = Path(path) if path else None
+
+
+def get_default_log_dir() -> Path:
+    """当前的默认日志目录（测试用）"""
+    if _default_log_dir is not None:
+        return _default_log_dir
+    return Path(__file__).parent.parent.parent / "logs"
+
+
 class AgentLogger:
     """Agent执行日志记录器"""
-    
+
     def __init__(self, log_dir: Optional[str] = None):
         """
         初始化日志记录器
-        
+
         Args:
-            log_dir: 日志存储目录，默认 deal_video_agent/logs
+            log_dir: 日志存储目录。不传则用 `set_default_log_dir()` 设的值；
+                     也没设过就用 `src/logs`（历史默认值，仅供旧脚本单独运行）。
         """
         if log_dir is None:
-            base_dir = Path(__file__).parent.parent.parent
-            log_dir = base_dir / "logs"
-        
+            log_dir = get_default_log_dir()
+
         self.log_dir = Path(log_dir)
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        
+        #: 目录**懒建** —— 见 `_write`。以前在 __init__ 里 mkdir，
+        #: 结果每次跑都在 src/ 下留一个空 logs/，误导人以为日志写在那里。
+        self.log_dir_ready = False
+
         self._logger: Optional[structlog.BoundLogger] = None
         self._run_id: Optional[str] = None
         self._start_time: Optional[datetime] = None
-        self._log_events: list = []  # 用于保存到JSON的日志事件
-        
+        self._log_events: list = []  # 保留：save_to_json 用
+
         self._configure_logger()
-    
+
     def _configure_logger(self):
-        """配置structlog"""
-        # 确保日志目录存在
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        
+        """配置structlog（控制台输出保持原样）"""
         # 配置处理器
         processors = [
             structlog.contextvars.merge_contextvars,
@@ -52,7 +110,7 @@ class AgentLogger:
             structlog.processors.ExceptionRenderer(),
             structlog.dev.ConsoleRenderer()  # 开发时彩色输出
         ]
-        
+
         structlog.configure(
             processors=processors,
             wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
@@ -60,13 +118,29 @@ class AgentLogger:
             logger_factory=structlog.PrintLoggerFactory(),
             cache_logger_on_first_use=True,
         )
-        
-        self._logger = structlog.get_logger("subtitle_agent")
-    
-    def _get_log_file_path(self) -> Path:
-        """获取当前运行日志文件路径"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        return self.log_dir / f"agent_run_{timestamp}.json"
+
+        self._logger = _TeeBoundLogger(structlog.get_logger("subtitle_agent"), self._write)
+
+    # ── 落盘 ──
+
+    def _log_file_path(self) -> Path:
+        """本次运行的 JSONL 文件。run_id 在 start() 里定；没有就用当前时间。"""
+        tag = self._run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+        return self.log_dir / f"agent-{tag}.jsonl"
+
+    def _write(self, level: str, event: str, fields: dict) -> None:
+        """追加一行 JSONL（目录按需创建）"""
+        if not self.log_dir_ready:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+            self.log_dir_ready = True
+        record = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "level": level,
+            "event": event,
+            **fields,
+        }
+        with self._log_file_path().open("a", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
     
     def start(self, target_dir: str, user_prompt: str):
         """
@@ -225,6 +299,10 @@ def get_logger(log_dir: Optional[str] = None) -> AgentLogger:
 
 
 def reset_logger():
-    """重置日志记录器实例"""
+    """重置日志记录器实例。
+
+    **不动** `set_default_log_dir()` 设的值 —— 否则 `nodes.py` 每次运行
+    重置一次，外面好不容易设好的批次目录就被冲掉，日志又跑回 src/logs。
+    """
     global _logger_instance
     _logger_instance = None

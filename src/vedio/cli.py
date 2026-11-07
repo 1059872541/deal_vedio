@@ -45,6 +45,23 @@ def _quiet_stdout(as_json: bool):
     return contextlib.redirect_stdout(sys.stderr) if as_json else contextlib.nullcontext()
 
 
+def _log_hint(project: context.Project) -> str:
+    """跑完之后告诉人日志在哪。
+
+    用户原来会去翻 `deal_vedio/logs`（旧 logger 在仓库里留的空目录），
+    那里永远是空的 —— 真正的日志在批次的 `log/`。不主动说一句就会一直找错地方。
+    """
+    import re as _re
+    from .events import list_logs
+
+    # 通用日志（事件流水）不是"这次运行的过程"，不该抢占"最新"这个名字
+    generic = _re.compile(r"^(events\.jsonl|\d{4}-\d{2}-\d{2}\.log)$")
+    interesting = [f for f in list_logs(project.log_dir) if not generic.match(f.path.name)]
+
+    detail = f"，最新 {interesting[0].path.name}" if interesting else ""
+    return f"\n  日志：{project.log_dir}{detail}\n        （vedio logs 随时回看）"
+
+
 # ─────────────────────────── 输出 ───────────────────────────
 
 def _emit(payload: dict[str, Any], as_json: bool, renderer: Optional[Callable[[dict], str]] = None) -> None:
@@ -154,6 +171,7 @@ def cmd_export(args: argparse.Namespace, project: context.Project) -> int:
             mark = {"done": "✓", "skip": "·", "fail": "✗"}.get(r["status"], "?")
             detail = r["message"] or ""
             lines.append(f"  {mark} {r['collection']}  {detail}")
+        lines.append(_log_hint(project))
         return "\n".join(lines)
 
     _emit(payload, args.json, render)
@@ -266,6 +284,7 @@ def cmd_subtitle(args: argparse.Namespace, project: context.Project) -> int:
         for r in p["results"]:
             mark = {"done": "✓", "skip": "·", "fail": "✗"}.get(r["status"], "?")
             lines.append(f"  {mark} {r['collection']}  {r['step']:<8}{r['message']}")
+        lines.append(_log_hint(project))
         return "\n".join(lines) or "  （没有要做的）"
 
     _emit(payload, args.json, render)
@@ -293,6 +312,7 @@ def cmd_splice(args: argparse.Namespace, project: context.Project) -> int:
         for r in p["results"]:
             mark = {"done": "✓", "skip": "·", "fail": "✗"}.get(r["status"], "?")
             lines.append(f"  {mark} {r['collection']}  {r['message']}")
+        lines.append(_log_hint(project))
         return "\n".join(lines) or "  （没有要做的）"
 
     _emit(payload, args.json, render)
@@ -366,6 +386,7 @@ def cmd_run(args: argparse.Namespace, project: context.Project) -> int:
         for r in p["results"]:
             mark = "✓" if r["ok"] else "✗"
             lines.append(f"  {mark} {r['collection']:<8}{r['step']:<9}{r['message']}")
+        lines.append(_log_hint(project))
         return "\n".join(lines)
 
     _emit(payload, args.json, render)

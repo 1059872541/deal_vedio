@@ -125,6 +125,28 @@ def read_agent_titles(project: Project, collection: Collection) -> Optional[list
     return sections.get(collection.name) or (titles if collection.name in sections else None)
 
 
+def _point_legacy_logger(log_dir: Path) -> None:
+    """把旧 agent 的日志指到批次 `log/`。
+
+    它的默认 `log_dir` 是 `src/logs` —— 在代码仓库里，而且历史上从不写文件，
+    于是每次运行都在仓库里留一个空目录，误导人以为日志在那儿。
+
+    **必须设"默认目录"而不只是传参**：`nodes.py` 每次运行都会
+    `reset_logger()` 再 `get_logger()`（不带参数），把外面设好的目录冲掉。
+
+    失败不影响主流程：旧模块的结构随时可能被改。
+    """
+    try:
+        from deal_video_agent.agent.logger import (
+            get_logger, reset_logger, set_default_log_dir,
+        )
+        set_default_log_dir(log_dir)
+        reset_logger()
+        get_logger(str(log_dir))
+    except Exception:                        # noqa: BLE001
+        pass
+
+
 def correct(project: Project, collection: Collection, *, log: Optional[EventLog] = None,
             runner: Optional[Runner] = None, prompt: Optional[str] = None,
             force: bool = False, titles_writer: Optional[Callable[[list[str]], None]] = None
@@ -147,6 +169,7 @@ def correct(project: Project, collection: Collection, *, log: Optional[EventLog]
     runner = runner or _default_runner()
     text = prompt or DEFAULT_PROMPT
     log_file: Optional[Path] = None
+    _point_legacy_logger(project.log_dir)
     try:
         if log is not None:
             log.emit("subtitle:correct", "start", name, prompt=text[:60])

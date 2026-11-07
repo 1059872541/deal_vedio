@@ -372,6 +372,21 @@ class TestVerbDispatch(CliCase):
         self.assertIn("export-合集一", out)
         self.assertIn("最新在前", out)
 
+    def test_log_hint_shown_after_write_verbs(self):
+        """人原来会去翻 deal_vedio/logs（空目录），必须主动告诉他日志在哪"""
+        code, out, err = self.run_cli("subtitle", *self.base(), "--collections", "合集一")
+        self.assertEqual(code, cli.EXIT_FAIL)          # 没有 .txt，必然失败
+        self.assertIn("日志：", out)
+        self.assertIn("log", out)
+        self.assertIn("vedio logs", out)
+
+    def test_log_hint_lists_newest_file(self):
+        log_dir = self.root / "log"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "agent-subtitle-合集一-20260101-000000.log").write_text("x", encoding="utf-8")
+        code, out, err = self.run_cli("splice", *self.base(), "--collections", "合集一")
+        self.assertIn("agent-subtitle-合集一-20260101-000000.log", out)
+
     def test_all_verbs_have_help(self):
         """十一个动词都要能加载（防 import 错误）"""
         for verb in ("paths", "status", "init", "subtitle", "export",
