@@ -285,6 +285,76 @@ def cmd_splice(args: argparse.Namespace, project: context.Project) -> int:
     return EXIT_OK if payload["ok"] else EXIT_FAIL
 
 
+# ─────────────────────────── 动词：rename / ledger / run ───────────────────────────
+
+def cmd_rename(args: argparse.Namespace, project: context.Project) -> int:
+    """按 标题.md 给成片改名"""
+    from .events import EventLog
+    from .stages import rename as rename_stage
+
+    log = EventLog(project.log_dir)
+    results = rename_stage.rename_batch(project, _split_list(args.collections),
+                                        log=log, dry_run=args.dry_run)
+    payload = {"ok": all(r.ok for r in results), "results": [r.as_dict() for r in results]}
+
+    def render(p: dict) -> str:
+        lines = []
+        for r in p["results"]:
+            mark = {"done": "✓", "skip": "·", "fail": "✗"}.get(r["status"], "?")
+            lines.append(f"  {mark} {r['collection']}  {r['message']}")
+            if args.dry_run:
+                for item in r["renamed"][:3]:
+                    lines.append(f"      {item['from']} → {item['to']}")
+        return "\n".join(lines) or "  （没有要做的）"
+
+    _emit(payload, args.json, render)
+    return EXIT_OK if payload["ok"] else EXIT_FAIL
+
+
+def cmd_ledger(args: argparse.Namespace, project: context.Project) -> int:
+    """生成台账 Excel"""
+    from .events import EventLog
+    from .stages import ledger as ledger_stage
+
+    log = EventLog(project.log_dir)
+    result = ledger_stage.build_ledger(project, _split_list(args.collections),
+                                       log=log, force=args.force)
+    payload = result.as_dict()
+
+    def render(p: dict) -> str:
+        mark = {"done": "✓", "skip": "·", "fail": "✗"}.get(p["status"], "?")
+        return f"  {mark} {p['message']}\n    台账：{p['path']}"
+
+    _emit(payload, args.json, render)
+    return EXIT_OK if result.ok else EXIT_FAIL
+
+
+def cmd_run(args: argparse.Namespace, project: context.Project) -> int:
+    """按步骤推进（可夜里跑）"""
+    from .events import EventLog
+    from .stages import run as run_stage
+
+    steps = _split_list(args.steps)
+    log = EventLog(project.log_dir)
+    try:
+        report = run_stage.run(project, steps, _split_list(args.collections), log=log)
+    except ValueError as exc:
+        return _fail("bad_step", str(exc), args.json)
+
+    payload = report.as_dict()
+
+    def render(p: dict) -> str:
+        lines = [f"跑 {len(p['steps'])} 步 × {len(p['collections'])} 合集："
+                 f"{'全部成功' if p['ok'] else '有失败'}"]
+        for r in p["results"]:
+            mark = "✓" if r["ok"] else "✗"
+            lines.append(f"  {mark} {r['collection']:<8}{r['step']:<9}{r['message']}")
+        return "\n".join(lines)
+
+    _emit(payload, args.json, render)
+    return EXIT_OK if report.ok else EXIT_FAIL
+
+
 # ─────────────────────────── 参数解析 ───────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -345,7 +415,32 @@ def build_parser() -> argparse.ArgumentParser:
     p_splice.add_argument("--force", action="store_true", help="已有成片也重做")
     p_splice.set_defaults(handler=cmd_splice)
 
+    p_rename = sub.add_parser("rename", help="按 标题.md 给成片改名")
+    add_common(p_rename)
+    p_rename.add_argument("--collections", help="只做这些合集，逗号分隔；不传=全部")
+    p_rename.add_argument("--dry-run", action="store_true", help="只列出要改什么，不动文件")
+    p_rename.set_defaults(handler=cmd_rename)
+
+    p_ledger = sub.add_parser("ledger", help="生成台账 Excel")
+    add_common(p_ledger)
+    p_ledger.add_argument("--collections", help="只写这些合集，逗号分隔；不传=全部")
+    p_ledger.add_argument("--force", action="store_true", help="已有台账也重写")
+    p_ledger.set_defaults(handler=cmd_ledger)
+
+    p_run = sub.add_parser("run", help="按步骤推进（可夜里跑）")
+    add_common(p_run)
+    p_run.add_argument("--collections", help="只跑这些合集，逗号分隔；不传=全部")
+    p_run.add_argument("--steps", default=",".join(run_step_names()),
+                       help="要跑的步骤，逗号分隔")
+    p_run.set_defaults(handler=cmd_run)
+
     return parser
+
+
+def run_step_names() -> list[str]:
+    """给 --steps 的默认值和 help 用（避免和 run 模块的常量各写一份）"""
+    from .stages.run import ALL_STEPS
+    return list(ALL_STEPS)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
