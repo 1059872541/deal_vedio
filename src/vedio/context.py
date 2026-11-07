@@ -782,6 +782,16 @@ class Project:
             return self._local.draft_dir
         return discover_jianying_root()
 
+    @property
+    def ffmpeg(self) -> str:
+        """ffmpeg 命令名或路径（来自 conf/本机.yaml）"""
+        return self._local.ffmpeg
+
+    @property
+    def ffprobe(self) -> str:
+        """ffprobe 命令名或路径（来自 conf/本机.yaml）"""
+        return self._local.ffprobe
+
     def available_drafts(self) -> list[str]:
         """剪映首页上能看到的草稿**显示名**，按最近修改倒序。"""
         return [d.name for d in self.drafts()]
@@ -823,7 +833,8 @@ class Project:
             "assets_dir": str(self.assets_dir),
             "glossary_dir": str(self.glossary_dir),
             "log_dir": str(self.log_dir),
-            "draft_dir": str(self._local.draft_dir) if self._local.draft_dir else None,
+            # 用属性而不是 _local.draft_dir —— 后者绕过了自动发现
+            "draft_dir": str(self.draft_dir) if self.draft_dir else None,
             "missing_dirs": self.missing_dirs(),
             "collections": [c.name for c in self.collections()],
         }
