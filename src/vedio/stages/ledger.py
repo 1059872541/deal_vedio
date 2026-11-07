@@ -66,8 +66,8 @@ class LedgerRow:
     def as_list(self, *, collection_name: str, host: str, category: str,
                 year: Any) -> list[Any]:
         return [
-            collection_name,      # A 合集名
-            "",                   # B 精彩看点（来源待定）
+            collection_name,      # A 合集名（篇名-上篇/下篇）
+            self.title,           # B 精彩看点 = 该集标题
             round(self.seconds, 1),
             self.collection_seconds,
             round(self.intro_seconds, 1),

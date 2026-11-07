@@ -27,10 +27,7 @@ from .. import media
 from .. import progress
 from ..context import Collection, Project
 from ..events import DONE, FAIL, SKIP, EventLog
-
-#: 从 `合集一-03.mp4` 里取集号
-_INDEX_RE = re.compile(r"-(\d+)$")
-
+from util.file_utils import TextUtils
 
 class RenameError(Exception):
     def __init__(self, code: str, message: str, hint: str = "", **detail: Any) -> None:
@@ -52,6 +49,8 @@ class RenameResult:
     collection: str
     status: str                       # done / skip / fail
     renamed: list[tuple[str, str]] = field(default_factory=list)
+    #: 集数超出标题条数、改不了名的文件
+    unmatched: list[str] = field(default_factory=list)
     error: Optional[str] = None
     message: str = ""
 
@@ -64,6 +63,7 @@ class RenameResult:
             "collection": self.collection,
             "status": self.status,
             "renamed": [{"from": a, "to": b} for a, b in self.renamed],
+            "unmatched": self.unmatched,
             "error": self.error,
             "message": self.message,
         }
@@ -71,10 +71,32 @@ class RenameResult:
 
 # ─────────────────────────── 命名模板 ───────────────────────────
 
+#: 改名**之前**的编号：`合集一-03.mp4` → 3
+_INDEX_RE = re.compile(r"-(\d+)$")
+#: 改名**之后**的编号：`… 第十集 xxx.mp4` → 10
+_CN_EPISODE_RE = re.compile(r"第([一二三四五六七八九十百]+)集")
+
+
 def episode_index(path: Path) -> Optional[int]:
-    """从 `合集一-03.mp4` 取 3；取不到返回 None"""
-    m = _INDEX_RE.search(Path(path).stem)
-    return int(m.group(1)) if m else None
+    """从文件名取集号。
+
+    两种形态都要认：
+    - 未改名：`合集一-03.mp4` → 3
+    - 已改名：`波波之我的世界 副标题 第十集 标题.mp4` → 10
+
+    **必须都认**：`ledger` 是按集号把成片和标题对齐的。只认旧格式时，
+    改过名的成片会被当成"没编号"排到队尾，台账的集号和标题整个错位 ——
+    实测踩过（第 21 行挂着「第十集 装备下界遗物」）。
+    """
+    stem = Path(path).stem
+    m = _INDEX_RE.search(stem)
+    if m:
+        return int(m.group(1))
+    m = _CN_EPISODE_RE.search(stem)
+    if m:
+        num = TextUtils.chinese_to_number(m.group(1))
+        return num if num > 0 else None
+    return None
 
 
 def build_names(project: Project, collection: Collection,
@@ -168,10 +190,17 @@ def rename_collection(project: Project, collection: Collection, *,
     renamed: list[tuple[str, str]] = []
     taken: set[str] = set()
     conflicts: list[str] = []
+    #: 集数超出标题条数的文件 —— 标题不够，这些注定改不了名
+    untitled: list[str] = []
 
     for path in indexed:
         target_name = by_index.get(episode_index(path))
-        if target_name is None or target_name in taken:
+        if target_name is None:
+            # 集数超过标题条数（素材切出的段比标题多）——**不能静默跳过**，
+            # 否则 22 个成片里 2 个永远没名字，人还以为全改完了
+            untitled.append(path.name)
+            continue
+        if target_name in taken:
             continue
         if target_name in already:
             # 已经有文件叫这个名字了，而编号文件还想改成它 → 重复内容，报冲突
@@ -189,10 +218,17 @@ def rename_collection(project: Project, collection: Collection, *,
 
     if not plan:
         if log is not None:
-            log.emit("rename", SKIP, name, reason="already_named", checked=len(finals))
+            log.emit("rename", SKIP, name, reason="already_named", checked=len(finals),
+                     unmatched=untitled or None, finals=len(finals),
+                     titles=len(expected_names))
         progress.record(project, name, "命名")
-        return RenameResult(name, "skip",
-                            message=f"{len(finals)} 个成片名字已经对了")
+        message = f"{len(finals) - len(untitled)} 个成片名字已经对了"
+        if untitled:
+            # 别把"2 个根本没名字"也算进"已经对了"
+            message += (f"；⚠ 另有 {len(untitled)} 个没有对应标题（标题只有 "
+                        f"{len(expected_names)} 条，成片有 {len(finals)} 个）："
+                        f"{'、'.join(untitled)}")
+        return RenameResult(name, "skip", unmatched=untitled, message=message)
 
     if dry_run:
         return RenameResult(name, "skip", renamed=renamed,
@@ -213,11 +249,18 @@ def rename_collection(project: Project, collection: Collection, *,
     for src, dest in plan:
         src.rename(dest)
 
+    message = f"改名 {len(plan)} 个"
+    if untitled:
+        message += (f"；⚠ 另有 {len(untitled)} 个没有对应标题（标题只有 "
+                    f"{len(expected_names)} 条，成片有 {len(finals)} 个）："
+                    f"{'、'.join(untitled)}")
     if log is not None:
-        log.emit("rename", DONE, name, count=len(plan), names=[b for _, b in renamed])
+        log.emit("rename", DONE, name, count=len(plan), names=[b for _, b in renamed],
+                 unmatched=untitled or None, finals=len(finals),
+                 titles=len(expected_names))
     progress.record(project, name, "命名")
-    return RenameResult(name, "done", renamed=renamed,
-                        message=f"改名 {len(plan)} 个")
+    return RenameResult(name, "done", renamed=renamed, unmatched=untitled,
+                        message=message)
 
 
 # ─────────────────────────── 批量 ───────────────────────────

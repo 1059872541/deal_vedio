@@ -237,7 +237,7 @@ class TestLedger(Base):
 
         first = [c.value for c in ws[2]]
         self.assertEqual(first[0], "波波之我的世界 收集强力变身-上篇")   # A
-        self.assertIn(first[1], ("", None))                             # B 待定
+        self.assertEqual(first[1], "林中小屋初探")   # B 精彩看点 = 该集标题
         self.assertAlmostEqual(first[2], 401.0)                         # C
         self.assertAlmostEqual(first[4], 30.0)                          # E
         self.assertAlmostEqual(first[5], 371.0)                         # F
