@@ -189,6 +189,16 @@ def collect_rows(project: Project, collections: Optional[list[str]] = None
 
 # ─────────────────────────── 写 Excel ───────────────────────────
 
+def _group_rows(rows: list[LedgerRow]) -> dict[str, list[LedgerRow]]:
+    """按合集分组并保持顺序（集号升序）。写 K/L 时要按块定位行号。"""
+    grouped: dict[str, list[LedgerRow]] = {}
+    for row in rows:
+        grouped.setdefault(row.collection, []).append(row)
+    for items in grouped.values():
+        items.sort(key=lambda r: r.episode)
+    return grouped
+
+
 def _load_excel_generator(path: Path):
     """加载外部片单生成脚本（`conf/本机.yaml` 的 `paths.excel_generator`）。
 
@@ -246,7 +256,125 @@ def _collections_payload(rows: list[LedgerRow], project: Project) -> list[dict[s
     return payload
 
 
-def ledger_target(project: Project, month: int | None = None) -> Path:
+# ─────────────────────────── AI 生成 K/L 两列 ───────────────────────────
+
+DESC_SYSTEM_DEFAULT = """\
+你是游戏实况视频的运营编辑，正在填写交付给甲方的片单表格。
+会给你一个合集的每集标题，请为这个合集写两句交付用文案。
+
+只输出一个 JSON 对象，不要解释、不要代码块：
+{"intro": "...", "keywords": "..."}
+
+要求：
+- intro：20~40 个汉字，概括这一合集的内容走向。用中文标点，**以句号结尾**
+- keywords：4~6 个关键词，**用顿号「、」分隔**，不加书名号、不加空格
+"""
+
+
+def build_desc_prompt(project: Project, collection: str, titles: list[str]) -> str:
+    full = project.titles.full_collection_name(collection) or collection
+    lines = "\n".join(f"{i}. {t}" for i, t in enumerate(titles, 1))
+    return f"合集：{full}\n集数：{len(titles)}\n\n每集标题：\n{lines}"
+
+
+def normalize_intro(text: str) -> str:
+    """规整内容介绍：去引号、去空白，句末补句号。"""
+    value = (text or "").strip().strip("\"'“”「」")
+    value = "".join(value.split())
+    if value and value[-1] not in "。！？":
+        value += "。"
+    return value
+
+
+def normalize_keywords(text: str) -> str:
+    """规整关键字：统一用顿号分隔，去逗号/空格/书名号。"""
+    raw = (text or "").strip().strip("\"'“”「」")
+    for sep in (",", "，", ";", "；", "|", " "):
+        raw = raw.replace(sep, "、")
+    parts = [p.strip("《》<>　 ") for p in raw.split("、")]
+    return "、".join(p for p in parts if p)
+
+
+def generate_copy(project: Project, collection: str, titles: list[str],
+                  client: Optional[object] = None) -> tuple[str, str]:
+    """让模型生成 (内容介绍, 关键字)。失败返回 ("", "")，不让它拖垮台账。"""
+    if not titles:
+        return "", ""
+    from .. import context as _ctx
+    system_prompt = _ctx.AgentConfig.load().prompt("ledger_copy", DESC_SYSTEM_DEFAULT)
+    if client is None:
+        try:
+            from deal_video_agent.agent.tools.deepseek_api import DeepSeekClient
+            client = DeepSeekClient()
+        except Exception:
+            return "", ""
+    prompt = build_desc_prompt(project, collection, titles)
+    try:
+        text, _usage = client.chat(system_prompt, prompt)   # type: ignore[attr-defined]
+    except Exception:
+        return "", ""
+
+    import json as _json
+    raw = (text or "").strip()
+    if raw.startswith("```"):
+        raw = raw.strip("`")
+        raw = raw[raw.find("{"):]
+    start, end = raw.find("{"), raw.rfind("}")
+    if start < 0 or end < start:
+        return "", ""
+    try:
+        data = _json.loads(raw[start:end + 1])
+    except Exception:
+        return "", ""
+    return (normalize_intro(str(data.get("intro") or "")),
+            normalize_keywords(str(data.get("keywords") or "")))
+
+
+def fill_ai_columns(path: Path, blocks: list[tuple[int, int, str, list[str]]],
+                    project: Project, client: Optional[object] = None) -> list[str]:
+    """把内容介绍/关键字写进 K/L 列。返回逐条失败说明。
+
+    Args:
+        blocks: [(起始行, 行数, 合集名, 标题列表), ...] —— 顺序必须与生成时一致
+                （数据从第 5 行起，每合集占 video_count 行）
+
+    K/L 在生成脚本里是合并单元格，所以只能写每块的第一行。
+    """
+    from openpyxl import load_workbook
+
+    problems: list[str] = []
+    wb = load_workbook(str(path))
+    ws = wb.active
+    for start_row, count, name, titles in blocks:
+        intro, keywords = generate_copy(project, name, titles, client=client)
+        if not intro and not keywords:
+            problems.append(f"{name}: 内容介绍/关键字没生成出来")
+            continue
+        ws.cell(row=start_row, column=11, value=intro)      # K
+        ws.cell(row=start_row, column=12, value=keywords)   # L
+        if not (20 <= len(intro) <= 40):
+            problems.append(f"{name}: 内容介绍 {len(intro)} 字（要求 20~40）")
+        n_kw = len([k for k in keywords.split("、") if k])
+        if not (4 <= n_kw <= 6):
+            problems.append(f"{name}: 关键字 {n_kw} 个（要求 4~6）")
+    wb.save(str(path))
+    return problems
+    """交付用的台账路径：`{ledger_root}/{year}/26年{host}{month}月第一批片单.xlsx`。
+
+    台账是**交付物**，不属于某个批次 —— 同一个月几批共用一份命名规则。
+
+    **不做自动改名**（`_1`、`_2` 那种）：那样每跑一次夜里任务就多一份表，
+    人还得自己去分辨哪份是最终版。存在就跳过，要重写就 `--force`。
+    """
+    local = getattr(project, "local", None)
+    root = getattr(local, "ledger_root", None) or (project.batch_dir / "台账")
+    year = int(project.rule("meta.year", 2026) or 2026)
+    host = project.host or ""
+    month = month or int(time.strftime("%m"))
+    return Path(root) / str(year) / f"{year % 100}年{host}{month}月第一批片单.xlsx"
+
+
+def ledger_target(project: Project, month: Optional[int] = None) -> Path:
     """交付用的台账路径：`{ledger_root}/{year}/26年{host}{month}月第一批片单.xlsx`。
 
     台账是**交付物**，不属于某个批次 —— 同一个月几批共用一份命名规则。
@@ -299,8 +427,8 @@ def write_workbook(path: Path, rows: list[LedgerRow], project: Project) -> None:
 
 def build_ledger(project: Project, collections: Optional[list[str]] = None, *,
                  log: Optional[EventLog] = None,
-                 force: bool = False) -> LedgerResult:
-    """生成 `{批次}/台账.xlsx`"""
+                 force: bool = False, with_ai: bool = True) -> LedgerResult:
+    """生成交付用的片单 xlsx（`ledger_target()` 算路径）"""
     if log is None:
         log = EventLog(project.log_dir)
 
@@ -345,6 +473,19 @@ def build_ledger(project: Project, collections: Optional[list[str]] = None, *,
     except Exception as exc:                 # noqa: BLE001
         log.emit("ledger", FAIL, error=type(exc).__name__, message=str(exc))
         return LedgerResult("fail", error=type(exc).__name__, message=str(exc))
+
+    # K/L 两列：生成脚本固定写空，由模型补（内容介绍 / 关键字）
+    if with_ai:
+        blocks: list[tuple[int, int, str, list[str]]] = []
+        start_row = 5
+        for name, items in _group_rows(rows).items():
+            blocks.append((start_row, len(items), name, [r.title for r in items]))
+            start_row += len(items)
+        try:
+            ai_problems = fill_ai_columns(out, blocks, project)
+            problems.extend(ai_problems)
+        except Exception as exc:                 # noqa: BLE001
+            problems.append(f"内容介绍/关键字没写进去：{exc}")
 
     involved = sorted({r.collection for r in rows})
     log.emit("ledger", DONE, rows=len(rows), collections=involved, file=out.name,

@@ -222,7 +222,7 @@ def _mark_titled(project: Project, assignments: dict[str, str]) -> None:
 
 # ─────────────────────────── 让模型提一个篇名 ───────────────────────────
 
-SUGGEST_SYSTEM = """\
+SUGGEST_SYSTEM_DEFAULT = """\
 你是游戏实况视频的运营编辑。用户会给你几个合集的每集标题。
 请概括这一组内容，给整个系列起一个**篇名**。
 
@@ -258,6 +258,8 @@ def suggest(project: Project, collections: list[str],
         return {"ok": False, "name": "", "collections": collections,
                 "error": "titles_missing"}
 
+    from .. import context as _ctx
+    system_prompt = _ctx.AgentConfig.load().prompt("series_suggest", SUGGEST_SYSTEM_DEFAULT)
     if client is None:
         try:
             from deal_video_agent.agent.tools.deepseek_api import DeepSeekClient
@@ -267,7 +269,7 @@ def suggest(project: Project, collections: list[str],
                     "error": f"model_unavailable: {exc}"}
 
     try:
-        text, _usage = client.chat(SUGGEST_SYSTEM, prompt)   # type: ignore[attr-defined]
+        text, _usage = client.chat(system_prompt, prompt)   # type: ignore[attr-defined]
     except Exception as exc:                          # noqa: BLE001
         return {"ok": False, "name": "", "collections": collections,
                 "error": f"model_failed: {exc}"}

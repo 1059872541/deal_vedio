@@ -194,6 +194,14 @@ class AgentConfig:
     model: str = DEFAULT_MODEL
     base_url: str = "https://api.deepseek.com"
     max_tokens: int = 8192
+    #: 提示词。键名稳定，内容可在 agent.yaml 里改，不改代码
+    #: （`series_suggest` = 起篇名，`ledger_copy` = 写内容介绍/关键字）
+    prompts: dict[str, str] = field(default_factory=dict)
+
+    def prompt(self, name: str, default: str = "") -> str:
+        """取提示词。配置里没有就用代码里的兜底默认值。"""
+        value = (self.prompts or {}).get(name)
+        return value.strip() if isinstance(value, str) and value.strip() else default
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "AgentConfig":
@@ -222,12 +230,17 @@ class AgentConfig:
         if max_tokens <= 0:
             max_tokens = 8192
 
+        prompts = data.get("prompts")
+        if not isinstance(prompts, dict):
+            prompts = {}
+
         return cls(
             api_key=str(section.get("api_key") or "").strip(),
             model=str(section.get("model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL,
             base_url=str(section.get("base_url") or "https://api.deepseek.com").strip()
                      or "https://api.deepseek.com",
             max_tokens=max_tokens,
+            prompts={str(k): str(v) for k, v in prompts.items() if isinstance(v, str)},
         )
 
 
