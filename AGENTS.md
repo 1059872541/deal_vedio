@@ -125,7 +125,27 @@ workspace:
 | 「今晚把这些跑完」 | `vedio run --steps export,splice,rename,ledger --collections ...` |
 | 「字幕审完了，导吧」 | `vedio export`（**这句话本身就是审批信号**，不要问"确认吗"） |
 | 「合集三剪好了，导出字幕了」 | `vedio subtitle --collections 合集三` |
+| 「上次字幕纠错改了什么」/「那个报错到底是什么」 | `vedio logs --collection 合集三 --tail 100`，然后摘要给他 |
 | 「出错了 / 卡住了」 | `vedio status --json`，读 `error`，用中文解释，给「重试 / 跳过 / 先停下」三个选项 |
+
+### 日志在哪（重要）
+
+`{批次}/log/` 下有三类文件，**别只看 `events.jsonl`**：
+
+| 文件 | 内容 | 用途 |
+|---|---|---|
+| `events.jsonl` | 一行一个 JSON 的结构化事件 | 用来看"做了什么、花了多久、失败码"，`status` 读它 |
+| `{日期}.log` | 同上的中文明文本，追加 | 人快速翻 |
+| `agent-subtitle-{合集}-{时间}.log` | **agent 完整过程**：解析出的主题、知识库命中、模型流式回复正文、token 消耗 | 字幕纠错出问题时唯一能看的东西 |
+| `export-{合集}-{时间}.log` | 剪映控制器找控件、等面板、等文件稳定的全过程 | 导出失败时唯一能看的东西 |
+
+**为什么要单独存**：旧 agent（`deal_video_agent/agent/logger.py`）只配了
+`structlog.PrintLoggerFactory()`，输出只到控制台；它自己的 `save_to_json()`
+从来没被调用过，`_log_events` 也一直是空的。模型还是**流式逐字 print** 的，
+连 structlog 都不经过。所以现在由 `EventLog.capture()` 在阶段层把
+stdout/stderr 整段 tee 到文件 —— 不管旧代码怎么打，都会落盘。
+
+用户问「为什么改了这一句」「为什么这么慢」时，**先 `vedio logs` 找证据，不要猜**。
 
 ---
 
@@ -272,7 +292,7 @@ Get-ChildItem "<workspace.root>" -Directory
 
 ## 当前开发状态
 
-`vedio` 命令行**已可用**，十个动词：
+`vedio` 命令行**已可用**，十一个动词：
 
 | 动词 | 干什么 | 会改文件吗 |
 |---|---|---|
@@ -286,6 +306,7 @@ Get-ChildItem "<workspace.root>" -Directory
 | `ledger` | 生成台账 xlsx | 是 |
 | `run` | 按 `--steps` 推进（可夜里跑） | 是 |
 | `series` | 给一组合集定「篇名 + 上下篇」（`rename` 的前置） | 是 |
+| `logs` | 看批次日志：列文件 + 打印最新那个的末尾 | 否 |
 
 ```powershell
 vedio status --game 我的世界 --batch 2026-12

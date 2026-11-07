@@ -345,10 +345,37 @@ class TestVerbDispatch(CliCase):
         self.assertEqual(payload["status"], "done")
         self.assertIn("进度输出", err)                 # 被赶到 stderr 了
 
+    def test_logs_empty(self):
+        code, out, err = self.run_cli("logs", *self.base(), "--json")
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertEqual(payload["count"], 0)
+        self.assertIn("log_dir", payload)
+
+    def test_logs_lists_and_tails(self):
+        log_dir = self.root / "log"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "agent-subtitle-合集一-20260101-000000.log").write_text(
+            "第一行\n最后一行\n", encoding="utf-8")
+        code, out, err = self.run_cli("logs", *self.base(), "--tail", "1", "--json")
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["tail"]["content"], "最后一行")
+
+    def test_logs_human_readable(self):
+        log_dir = self.root / "log"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "export-合集一-20260101-000000.log").write_text("x", encoding="utf-8")
+        code, out, err = self.run_cli("logs", *self.base(), "--collection", "合集一")
+        self.assertEqual(code, 0)
+        self.assertIn("export-合集一", out)
+        self.assertIn("最新在前", out)
+
     def test_all_verbs_have_help(self):
-        """十个动词都要能加载（防 import 错误）"""
+        """十一个动词都要能加载（防 import 错误）"""
         for verb in ("paths", "status", "init", "subtitle", "export",
-                     "splice", "rename", "ledger", "run", "series"):
+                     "splice", "rename", "ledger", "run", "series", "logs"):
             out, err = io.StringIO(), io.StringIO()
             with redirect_stdout(out), redirect_stderr(err):
                 with self.assertRaises(SystemExit) as ctx:

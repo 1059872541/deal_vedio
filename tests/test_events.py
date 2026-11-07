@@ -10,10 +10,12 @@
     - 坏行、写不进去的历史目录等边界都覆盖
 """
 
+import io
 import json
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -229,6 +231,173 @@ class TestRender(unittest.TestCase):
         ev = E.Event(verb="export", event="fail", collection="合集二",
                      fields={"error": "DraftNotFound"})
         self.assertIn("DraftNotFound", str(ev))
+
+
+# ─────────────────────────── 输出落盘（capture） ───────────────────────────
+
+class TestCapture(TempCase):
+    """旧代码（剪映控制器 / LangGraph agent / 流式模型回复）只会 print。
+    这些输出不落盘就找不回来了，所以要在这一层整段 tee 到文件。"""
+
+    def setUp(self):
+        super().setUp()
+        # capture 是往"真流"里写的，不关起来这些测试会把内容喷到控制台
+        self._old_streams = (sys.stdout, sys.stderr)
+        sys.stdout, sys.stderr = io.StringIO(), io.StringIO()
+        self.addCleanup(self._restore_streams)
+
+    def _restore_streams(self):
+        sys.stdout, sys.stderr = self._old_streams
+
+    def test_captures_stdout(self):
+        log = self.make()
+        with log.capture("agent-subtitle", "合集一") as path:
+            print("解析出的主题是：愚者整合包")
+        self.assertIn("解析出的主题是", path.read_text(encoding="utf-8"))
+
+    def test_captures_stderr(self):
+        log = self.make()
+        with log.capture("export") as path:
+            print("这行去 stderr", file=sys.stderr)
+        self.assertIn("这行去 stderr", path.read_text(encoding="utf-8"))
+
+    def test_captures_streamed_chunks(self):
+        """模型是逐字打印的，不能因为没换行就丢"""
+        log = self.make()
+        with log.capture("agent") as path:
+            for chunk in ["第", "一", "集"]:
+                print(chunk, end="", flush=True)
+        self.assertIn("第一集", path.read_text(encoding="utf-8"))
+
+    def test_strips_ansi_colors(self):
+        """structlog 的 ConsoleRenderer 会带颜色，写进文件是乱码"""
+        log = self.make()
+        with log.capture("agent") as path:
+            print("\x1b[32m绿色\x1b[0m 和 \x1b[1m粗体\x1b[0m")
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("绿色", text)
+        self.assertNotIn("\x1b", text)
+
+    def test_filename_has_name_and_collection(self):
+        log = self.make()
+        with log.capture("agent-subtitle", "合集一") as path:
+            pass
+        self.assertTrue(path.name.startswith("agent-subtitle-合集一-"))
+        self.assertEqual(path.suffix, ".log")
+        self.assertEqual(path.parent, self.log_dir)
+
+    def test_streams_restored_after_normal_exit(self):
+        log = self.make()
+        old_out, old_err = sys.stdout, sys.stderr
+        with log.capture("x"):
+            pass
+        self.assertIs(sys.stdout, old_out)
+        self.assertIs(sys.stderr, old_err)
+
+    def test_streams_restored_after_exception(self):
+        """崩了也要还原，否则后面所有输出都写进死文件"""
+        log = self.make()
+        old_out, old_err = sys.stdout, sys.stderr
+        with self.assertRaises(RuntimeError):
+            with log.capture("x"):
+                raise RuntimeError("boom")
+        self.assertIs(sys.stdout, old_out)
+        self.assertIs(sys.stderr, old_err)
+
+    def test_output_survives_exception(self):
+        """崩之前的输出必须留下 —— 那正是要查的东西"""
+        log = self.make()
+        with self.assertRaises(RuntimeError):
+            with log.capture("x") as path:
+                print("崩之前最后一句")
+                raise RuntimeError("boom")
+        self.assertIn("崩之前最后一句", path.read_text(encoding="utf-8"))
+
+    def test_works_inside_redirect(self):
+        """CLI 的 --json 模式会先把 stdout 指向 stderr，capture 要能套在里面"""
+        log = self.make()
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            with log.capture("x") as path:
+                print("hello")
+        self.assertEqual(buf.getvalue(), "hello\n")             # 外层照常收到
+        self.assertIn("hello", path.read_text(encoding="utf-8"))  # 文件也收到
+
+    def test_tee_delegates_attributes(self):
+        """encoding / isatty 这类属性要转给真流，免得子进程或库拿到会崩"""
+        log = self.make()
+        with log.capture("x"):
+            self.assertIsInstance(sys.stdout.isatty(), bool)
+            # 值本身取决于被包的流（StringIO 的 encoding 就是 None），
+            # 关键是**能取到**而不是抛 AttributeError
+            self.assertIn(sys.stdout.encoding, (None, "utf-8", "cp936", "UTF-8", "gbk"))
+
+
+# ─────────────────────────── 日志文件列表 ───────────────────────────
+
+class TestListLogs(TempCase):
+    def write(self, name: str, text: str = "x") -> Path:
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        p = self.log_dir / name
+        p.write_text(text, encoding="utf-8")
+        return p
+
+    def test_empty_when_missing_dir(self):
+        self.assertEqual(E.list_logs(self.tmp / "没有这个目录"), [])
+
+    def test_lists_newest_first(self):
+        import os
+        import time
+        old = self.write("agent-subtitle-合集一-20260101-000000.log")
+        new = self.write("agent-subtitle-合集二-20260102-000000.log")
+        os.utime(old, (1_700_000_000, 1_700_000_000))
+        os.utime(new, (1_800_000_000, 1_800_000_000))
+        files = E.list_logs(self.log_dir)
+        self.assertEqual(files[0].path.name, "agent-subtitle-合集二-20260102-000000.log")
+
+    def test_keyword_filter(self):
+        self.write("agent-subtitle-合集一-20260101-000000.log")
+        self.write("agent-subtitle-合集二-20260101-000000.log")
+        files = E.list_logs(self.log_dir, "合集一")
+        self.assertEqual([f.path.name for f in files],
+                         ["agent-subtitle-合集一-20260101-000000.log"])
+
+    def test_size_and_modified_present(self):
+        self.write("a.log", "12345")
+        f = E.list_logs(self.log_dir)[0]
+        self.assertEqual(f.size, 5)
+        self.assertRegex(f.modified, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+        self.assertEqual(f.as_dict()["name"], "a.log")
+
+    def test_dirs_are_skipped(self):
+        (self.log_dir / "子目录").mkdir(parents=True)
+        self.write("a.log")
+        self.assertEqual(len(E.list_logs(self.log_dir)), 1)
+
+
+class TestTailLog(TempCase):
+    def test_returns_last_lines(self):
+        self.log_dir.mkdir(parents=True)
+        p = self.log_dir / "a.log"
+        p.write_text("\n".join(f"第{i}行" for i in range(1, 11)), encoding="utf-8")
+        text = E.tail_log(p, 3)
+        self.assertEqual(text.splitlines(), ["第8行", "第9行", "第10行"])
+
+    def test_zero_means_nothing(self):
+        self.log_dir.mkdir(parents=True)
+        p = self.log_dir / "a.log"
+        p.write_text("x\ny\n", encoding="utf-8")
+        self.assertEqual(E.tail_log(p, 0), "")
+
+    def test_missing_file(self):
+        self.assertEqual(E.tail_log(self.tmp / "没有.log"), "")
+
+    def test_broken_bytes_do_not_crash(self):
+        """日志里可能混进编码错乱的字节，看日志本身不能失败"""
+        self.log_dir.mkdir(parents=True)
+        p = self.log_dir / "a.log"
+        p.write_bytes(b"\xff\xfe normal line\n ok\n")
+        self.assertIn("normal line", E.tail_log(p, 5))
 
 
 if __name__ == "__main__":

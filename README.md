@@ -38,12 +38,27 @@
 | `vedio ledger` | 生成台账 xlsx |
 | `vedio run` | 按 `--steps` 推进（可夜里跑） |
 | `vedio series` | 给一组合集定「篇名 + 上下篇」（`rename` 前置） |
+| `vedio logs` | 看批次日志（列文件 + 打印最新那个的末尾） |
 
 ```powershell
 vedio status --game 我的世界 --batch 2026-12
 vedio series --game 我的世界 --batch 2026-12 --groups "合集一,合集二=收集强力变身"
-vedio run --game 我的世界 --batch 2026-12 --collections 合集一,合集二 --steps export,splice,rename,ledger
+vedio logs   --game 我的世界 --batch 2026-12 --collection 合集一 --tail 100
+vedio run    --game 我的世界 --batch 2026-12 --collections 合集一,合集二 --steps export,splice,rename,ledger
 ```
+
+### 日志
+
+`{批次}/log/` 下有四种文件：
+
+| 文件 | 内容 |
+|---|---|
+| `events.jsonl` | 结构化事件（一行一个 JSON），`status` 读它 |
+| `{日期}.log` | 同上的中文明文本 |
+| `agent-subtitle-{合集}-{时间}.log` | **字幕 agent 的完整过程**：解析出的主题、知识库命中、模型回复正文、token 消耗 |
+| `export-{合集}-{时间}.log` | 剪映控制器的全过程：找控件、等面板、等文件稳定 |
+
+后两类是给"出问题了怎么办"用的 —— 结构化的 `events.jsonl` 只记结果，不记过程。
 
 加 `--json` 得到结构化结果；错误带 `error` 码和 `hint`。
 

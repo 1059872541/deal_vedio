@@ -146,23 +146,49 @@ def correct(project: Project, collection: Collection, *, log: Optional[EventLog]
 
     runner = runner or _default_runner()
     text = prompt or DEFAULT_PROMPT
+    log_file: Optional[Path] = None
     try:
         if log is not None:
             log.emit("subtitle:correct", "start", name, prompt=text[:60])
-        runner(str(collection.editing), text)
+            # agent 会 print 一大堆（解析结果、主题、流式模型回复、性能报告、token 成本），
+            # 这些不落盘就找不回来了 —— 旧 logger.py 只配了 PrintLoggerFactory，
+            # 连它自己的 save_to_json() 都没人调用过
+            with log.capture("agent-subtitle", name) as log_file:
+                agent_result = runner(str(collection.editing), text)
+        else:
+            agent_result = runner(str(collection.editing), text)
     except Exception as exc:                 # noqa: BLE001 - 任何异常都要落成结果
         if log is not None:
-            log.emit("subtitle:correct", FAIL, name, error=type(exc).__name__, message=str(exc))
+            log.emit("subtitle:correct", FAIL, name, error=type(exc).__name__, message=str(exc),
+                     log_file=log_file.name if log_file else None)
         return SubtitleResult(name, "correct", "fail", error=type(exc).__name__,
                               message=str(exc))
+
+    # agent 自己会把失败写进 status；不读它就会把"0 字节 corrected.txt"当成功
+    if isinstance(agent_result, dict) and agent_result.get("status") == "error":
+        message = agent_result.get("message") or "字幕 agent 报错"
+        if log is not None:
+            log.emit("subtitle:correct", FAIL, name, error="agent_error", message=message,
+                     log_file=log_file.name if log_file else None)
+        return SubtitleResult(name, "correct", "fail", error="agent_error",
+                              message=message)
 
     produced = subtitles.find_corrected(collection.editing)
     if produced is None:
         if log is not None:
             log.emit("subtitle:correct", FAIL, name, error="corrected_missing",
-                     message="agent 跑完了但没生成 corrected.txt")
+                     message="agent 跑完了但没生成 corrected.txt",
+                     log_file=log_file.name if log_file else None)
         return SubtitleResult(name, "correct", "fail", error="corrected_missing",
                               message=f"agent 跑完了但 {collection.editing} 里没有 corrected.txt")
+
+    if produced.stat().st_size == 0:
+        # 空文件 = 模型认为没有需要纠正的行。不报错，但也别让人以为"改过了"。
+        if log is not None:
+            log.emit("subtitle:correct", SKIP, name, reason="no_corrections",
+                     file=produced.name, log_file=log_file.name if log_file else None)
+        return SubtitleResult(name, "correct", "skip", outputs=[produced.name],
+                              message="模型未发现需要纠正的字幕（corrected.txt 为空）")
 
     # 标题：旧 agent 写在代码仓库里，我们搬进批次目录
     titles = read_agent_titles(project, collection)
@@ -179,10 +205,12 @@ def correct(project: Project, collection: Collection, *, log: Optional[EventLog]
 
     if log is not None:
         log.emit("subtitle:correct", DONE, name, file=produced.name,
-                 titles=len(titles) if titles else 0, titles_written=wrote_titles)
+                 titles=len(titles) if titles else 0, titles_written=wrote_titles,
+                 log_file=log_file.name if log_file else None)
     return SubtitleResult(name, "correct", "done", outputs=[produced.name],
                           detail={"titles": len(titles) if titles else 0,
-                                  "titles_written": wrote_titles},
+                                  "titles_written": wrote_titles,
+                                  "log_file": log_file.name if log_file else None},
                           message=f"{produced.name}（标题 {len(titles) if titles else 0} 条）")
 
 

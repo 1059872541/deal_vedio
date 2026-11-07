@@ -395,6 +395,40 @@ def cmd_series(args: argparse.Namespace, project: context.Project) -> int:
     return EXIT_OK if result.ok else EXIT_FAIL
 
 
+# ─────────────────────────── 动词：logs ───────────────────────────
+
+def cmd_logs(args: argparse.Namespace, project: context.Project) -> int:
+    """看批次日志（只读）"""
+    from .events import list_logs, tail_log
+
+    files = list_logs(project.log_dir, args.collection)
+    payload = {
+        "log_dir": str(project.log_dir),
+        "count": len(files),
+        "files": [f.as_dict() for f in files],
+    }
+    if args.tail and files:
+        payload["tail"] = {"file": files[0].path.name,
+                           "content": tail_log(files[0].path, args.tail)}
+
+    def render(p: dict) -> str:
+        if not p["count"]:
+            return f"  {p['log_dir']} 里还没有日志"
+        lines = [f"  {p['log_dir']}（{p['count']} 个文件，最新在前）"]
+        for f in p["files"][:20]:
+            lines.append(f"    {f['size']:>9,} B  {f['modified']}  {f['name']}")
+        if p["count"] > 20:
+            lines.append(f"    …还有 {p['count'] - 20} 个")
+        if "tail" in p:
+            lines.append("")
+            lines.append(f"  ── {p['tail']['file']} 最后几行 ──")
+            lines.append(p["tail"]["content"])
+        return "\n".join(lines)
+
+    _emit(payload, args.json, render)
+    return EXIT_OK
+
+
 # ─────────────────────────── 参数解析 ───────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -481,6 +515,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_series.add_argument("--force", action="store_true", help="副标题一样也重写")
     p_series.set_defaults(handler=cmd_series)
 
+    p_logs = sub.add_parser("logs", help="看批次日志（只读）")
+    add_common(p_logs)
+    p_logs.add_argument("--collection", help="只看文件名里含这个合集名的日志")
+    p_logs.add_argument("--tail", type=int, nargs="?", const=40, metavar="行数",
+                        help="顺带打印最新那个日志的末尾（默认 40 行）")
+    p_logs.set_defaults(handler=cmd_logs)
+
     return parser
 
 
@@ -490,7 +531,23 @@ def run_step_names() -> list[str]:
     return list(ALL_STEPS)
 
 
+def _ensure_utf8_stdio() -> None:
+    """控制台是 GBK 时，表格里的 emoji 会让 print 直接抛 UnicodeEncodeError。
+
+    `vedio.bat` 靠 `chcp 65001` 规避，但直接 `python vedio.py ...` 没有这一步。
+    这里统一把 stdio 钉成 UTF-8，转义不了的字符降级成替换字符而不是崩。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                pass
+
+
 def main(argv: Optional[list[str]] = None) -> int:
+    _ensure_utf8_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
 

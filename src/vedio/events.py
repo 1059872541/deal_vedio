@@ -29,12 +29,14 @@
 from __future__ import annotations
 
 import json
+import re
+import sys
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, Optional, TextIO
 
 #: 机器读的事件文件名
 EVENTS_FILE = "events.jsonl"
@@ -45,6 +47,47 @@ DONE = "done"
 FAIL = "fail"
 SKIP = "skip"
 INFO = "info"
+
+#: ANSI 颜色控制符。structlog 的 ConsoleRenderer 会带颜色，写进文件后是乱码，落盘前剥掉
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
+
+class _Tee:
+    """把写入同时送到原流和日志文件。
+
+    为什么要在这一层做，而不是去改旧模块的 print：
+    模型是**流式输出**的（`print(chunk, end="", flush=True)`），那些字符
+    根本没经过 structlog，改日志库抓不到。只有替换 `sys.stdout` 才能全收。
+    顺带把 structlog、traceback、第三方库的 print 一起收进来。
+    """
+
+    def __init__(self, stream: TextIO, handle: TextIO) -> None:
+        self._stream = stream
+        self._handle = handle
+
+    def write(self, data: str) -> int:
+        try:
+            self._handle.write(_strip_ansi(data))
+            self._handle.flush()          # 崩了也要留下崩之前的输出，所以每写必 flush
+        except (OSError, ValueError):
+            pass
+        return self._stream.write(data)
+
+    def flush(self) -> None:
+        try:
+            self._handle.flush()
+        except (OSError, ValueError):
+            pass
+        self._stream.flush()
+
+    def __getattr__(self, item: str) -> Any:
+        # 其余属性（encoding / isatty / fileno…）原样转给真流，
+        # 免得子进程或库拿到会崩的替代品
+        return getattr(self._stream, item)
 
 
 def _iso(ts: Optional[float] = None) -> str:
@@ -183,6 +226,32 @@ class EventLog:
             self.emit(verb, DONE, collection,
                       seconds=round(self._clock() - started, 1), **fields)
 
+    @contextmanager
+    def capture(self, name: str, collection: Optional[str] = None) -> Iterator[Path]:
+        """把这段工作里的 stdout / stderr 原样存到文件。
+
+        给"会自己 print 一堆东西"的旧代码用：剪映控制器、LangGraph agent、
+        流式输出的模型回复。它们的输出去不了 `events.jsonl`（那是结构化的），
+        又不能不存 —— 出问题时唯一能看的就是它。
+
+        Yields:
+            日志文件路径（调用方把它写进事件里，方便日后回看）
+        """
+        stamp = datetime.fromtimestamp(self._clock()).strftime("%Y%m%d-%H%M%S")
+        label = f"{name}-{collection}" if collection else name
+        path = self.log_dir / f"{label}-{stamp}.log"
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+
+        handle = path.open("a", encoding="utf-8", newline="\n")
+        old_out, old_err = sys.stdout, sys.stderr
+        try:
+            sys.stdout = _Tee(old_out, handle)
+            sys.stderr = _Tee(old_err, handle)
+            yield path
+        finally:
+            sys.stdout, sys.stderr = old_out, old_err
+            handle.close()
+
     # ── 读 ──
 
     def read(self) -> list[Event]:
@@ -249,3 +318,59 @@ def summarize(events: list[Event]) -> dict[str, dict[str, Any]]:
         s["avg_seconds"] = round(s["seconds"] / s["samples"], 1) if s["samples"] else None
         s["seconds"] = round(s["seconds"], 1)
     return stats
+
+
+# ─────────────────────────── 日志文件（capture 的产物） ───────────────────────────
+
+@dataclass
+class LogFile:
+    """`log/` 下的一个日志文件"""
+
+    path: Path
+    size: int
+    modified: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"name": self.path.name, "size": self.size,
+                "modified": self.modified, "path": str(self.path)}
+
+
+def list_logs(log_dir: Path, keyword: Optional[str] = None) -> list[LogFile]:
+    """列出 `log/` 下的日志文件，**最新的在前**。
+
+    Args:
+        keyword: 文件名里要包含的子串，如合集名 `合集一`；None = 全部
+    """
+    d = Path(log_dir)
+    if not d.is_dir():
+        return []
+    out: list[LogFile] = []
+    for p in d.iterdir():
+        if not p.is_file():
+            continue
+        if keyword and keyword not in p.name:
+            continue
+        try:
+            stat = p.stat()
+        except OSError:
+            continue
+        out.append(LogFile(
+            path=p, size=stat.st_size,
+            modified=datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+        ))
+    out.sort(key=lambda f: f.path.stat().st_mtime, reverse=True)
+    return out
+
+
+def tail_log(path: Path, lines: int = 40) -> str:
+    """读日志最后 N 行。
+
+    用 `errors="replace"` 读 —— 日志里可能混进编码错乱的字节（子进程输出、
+    剪贴板内容），不能让看日志本身失败。
+    """
+    p = Path(path)
+    if not p.is_file():
+        return ""
+    text = p.read_text(encoding="utf-8", errors="replace")
+    rows = text.splitlines()
+    return "\n".join(rows[-lines:]) if lines > 0 else ""

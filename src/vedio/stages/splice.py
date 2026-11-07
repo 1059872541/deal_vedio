@@ -330,8 +330,11 @@ def splice_collection(project: Project, collection: Collection, *,
             if not keep_segments:
                 _cleanup_temp(seg.temp)
     except SpliceError as exc:
+        # ffmpeg 的报错尾行在 hint 里 —— 不记下来就只剩"第 7 段切分失败"，
+        # 等于没线索。这一行往往是唯一能看出真正原因的东西。
         if log is not None:
-            log.emit("splice", FAIL, name, error=exc.code, message=exc.message)
+            log.emit("splice", FAIL, name, error=exc.code, message=exc.message,
+                     ffmpeg_hint=exc.hint or None, done=len(outputs))
         return SpliceResult(name, "fail", error=exc.code, message=exc.message,
                             outputs=outputs)
 

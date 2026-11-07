@@ -10,10 +10,13 @@
     - 三步的幂等（已存在就跳过）与失败传播都要验
 """
 
+import io
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 SRC = REPO / "src"
@@ -141,20 +144,78 @@ class TestCorrect(SubCase):
     def test_happy_without_titles(self):
         self.write_txt()
         runner = self.fake_runner()
-        r = SUB.correct(self.p, self.c, log=self.log, runner=runner)
+        # read_agent_titles 会去仓库里找旧 agent 写的标题文件。那里可能**真的**
+        # 有文件（人跑过一次就留下了），不隔离的话这条测试会随环境飘。
+        with mock.patch.object(SUB, "read_agent_titles", return_value=None):
+            r = SUB.correct(self.p, self.c, log=self.log, runner=runner)
         self.assertEqual(r.status, "done")
         self.assertEqual(runner.calls[0][0], str(self.c.editing))
         self.assertTrue((self.c.editing / "corrected.txt").is_file())
-        self.assertFalse(r.detail["titles_written"])   # 测试环境没有旧 agent 的标题文件
+        self.assertFalse(r.detail["titles_written"])
+
+    def test_titles_are_copied_when_available(self):
+        """旧 agent 写了标题时，要搬进批次的 标题.md"""
+        self.write_txt()
+        written = []
+        with mock.patch.object(SUB, "read_agent_titles",
+                               return_value=["第一集标题", "第二集标题"]):
+            r = SUB.correct(self.p, self.c, log=self.log, runner=self.fake_runner(),
+                            titles_writer=lambda ts: written.extend(ts))
+        self.assertEqual(written, ["第一集标题", "第二集标题"])
+        self.assertTrue(r.detail["titles_written"])
+        self.assertEqual(r.detail["titles"], 2)
 
     def test_titles_writer_injected(self):
         self.write_txt()
         written = []
-        r = SUB.correct(self.p, self.c, log=self.log, runner=self.fake_runner(),
-                        titles_writer=lambda ts: written.extend(ts))
-        # 注入的 writer 只在有标题时才被调用 —— 这里没有标题来源，不该被调
+        with mock.patch.object(SUB, "read_agent_titles", return_value=None):
+            r = SUB.correct(self.p, self.c, log=self.log, runner=self.fake_runner(),
+                            titles_writer=lambda ts: written.extend(ts))
+        # 没有标题来源时不该被调
         self.assertEqual(written, [])
         self.assertEqual(r.status, "done")
+
+    def test_agent_output_is_saved_to_log(self):
+        """agent 的 print 必须落盘 —— 出问题时这是唯一的线索"""
+        self.write_txt()
+
+        def noisy_runner(target_dir, prompt):
+            print("解析主题：我的世界愚者整合包")
+            print("流式回复：" + "纠" * 5)
+            (Path(target_dir) / "corrected.txt").write_text("1:x\n", encoding="utf-8")
+            return {}
+
+        with mock.patch.object(SUB, "read_agent_titles", return_value=None):
+            with redirect_stdout(io.StringIO()):
+                r = SUB.correct(self.p, self.c, log=self.log, runner=noisy_runner)
+
+        self.assertEqual(r.status, "done")
+        log_file = r.detail["log_file"]
+        self.assertTrue(log_file, "done 事件里应该带上日志文件名")
+        text = (self.p.log_dir / log_file).read_text(encoding="utf-8")
+        self.assertIn("解析主题：我的世界愚者整合包", text)
+        self.assertIn("流式回复：纠纠纠纠纠", text)
+
+        event = self.log.last(verb="subtitle:correct", event="done")
+        self.assertEqual(event.fields["log_file"], log_file)
+
+    def test_crash_still_leaves_log(self):
+        """崩之前的输出必须留下 —— 那正是要查的东西"""
+        self.write_txt()
+
+        def bad_runner(target_dir, prompt):
+            print("崩之前最后一句")
+            raise RuntimeError("API 限流")
+
+        with redirect_stdout(io.StringIO()):
+            r = SUB.correct(self.p, self.c, log=self.log, runner=bad_runner)
+        self.assertEqual(r.status, "fail")
+
+        event = self.log.last(verb="subtitle:correct", event="fail")
+        log_file = event.fields["log_file"]
+        self.assertTrue(log_file)
+        self.assertIn("崩之前最后一句",
+                      (self.p.log_dir / log_file).read_text(encoding="utf-8"))
 
     def test_runner_failure(self):
         self.write_txt()

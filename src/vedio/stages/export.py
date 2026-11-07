@@ -188,6 +188,7 @@ def export_collection(project: Project, collection: Collection, controller=None,
     params = export_params(project, enums)
     timeout = export_timeout(project)
 
+    log_file: Optional[Path] = None
     try:
         if log is not None:
             log.emit("export", "start", name, draft=draft, target=str(target_dir),
@@ -196,16 +197,27 @@ def export_collection(project: Project, collection: Collection, controller=None,
                      timeout=timeout)
         import time
         started = time.time()
-        controller.export_draft(
-            draft, str(target_dir),
-            resolution=params["resolution"],
-            framerate=params["framerate"],
-            timeout=timeout,
-        )
+        # 控制器一路 print 找控件、等面板、等文件稳定的过程 —— 导出失败时唯一能看的线索
+        if log is not None:
+            with log.capture("export", name) as log_file:
+                controller.export_draft(
+                    draft, str(target_dir),
+                    resolution=params["resolution"],
+                    framerate=params["framerate"],
+                    timeout=timeout,
+                )
+        else:
+            controller.export_draft(
+                draft, str(target_dir),
+                resolution=params["resolution"],
+                framerate=params["framerate"],
+                timeout=timeout,
+            )
         elapsed = time.time() - started
     except Exception as exc:                 # noqa: BLE001 - 任何失败都要落成结果，不中断整批
         if log is not None:
-            log.emit("export", FAIL, name, error=type(exc).__name__, message=str(exc))
+            log.emit("export", FAIL, name, error=type(exc).__name__, message=str(exc),
+                     log_file=log_file.name if log_file else None)
         return ExportResult(collection=name, status="fail", draft=draft,
                             error=type(exc).__name__, message=str(exc))
 
@@ -215,14 +227,16 @@ def export_collection(project: Project, collection: Collection, controller=None,
         # 这种情况必须报失败，不能记成功：正是"整段搬运静默失效"那类 bug。
         if log is not None:
             log.emit("export", FAIL, name, error="export_file_missing",
-                     message=f"控制器返回成功，但 {target_dir} 里没有新片")
+                     message=f"控制器返回成功，但 {target_dir} 里没有新片",
+                     log_file=log_file.name if log_file else None)
         return ExportResult(collection=name, status="fail", draft=draft,
                             target=target_dir, error="export_file_missing",
                             message=f"控制器返回成功，但 {target_dir} 里没有片子")
 
     if log is not None:
         log.emit("export", DONE, name, seconds=round(elapsed, 1),
-                 file=path.name, video_seconds=round(seconds, 1))
+                 file=path.name, video_seconds=round(seconds, 1),
+                 log_file=log_file.name if log_file else None)
     return ExportResult(collection=name, status="done", draft=draft,
                         target=path, seconds=elapsed,
                         message=f"导出完成（{media.hhmmss(elapsed)}）")
