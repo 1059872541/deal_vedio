@@ -17,6 +17,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 SRC = REPO / "src"
@@ -472,6 +473,40 @@ class TestVerbDispatch(CliCase):
         code, out, err = self.run_cli("init", *self.base(), "--add", "", "--json")
         self.assertEqual(code, cli.EXIT_FAIL)
         self.assertEqual(json.loads(err)["error"], "no_collections")
+
+    def test_export_refuses_when_space_short(self):
+        """导出前把「导出 + 拼接」一起算 —— 不够就别开始导。
+
+        实测踩过：导出顺利、花 5 分钟写满 2.8 GB，然后卡在拼接上。
+        拼接才是吃空间的大头，所以必须一起算。
+        """
+        repo = {"steps": ["export", "splice"], "collections": [],
+                "total": 10 * 1024 ** 3, "free": 1 * 1024 ** 3,
+                "enough": False, "short": 9 * 1024 ** 3}
+        with mock.patch("vedio.space.project_batch", return_value=repo):
+            code, out, err = self.run_cli("export", *self.base(),
+                                          "--collections", "合集一", "--json")
+        self.assertEqual(code, cli.EXIT_FAIL)
+        self.assertEqual(json.loads(err)["error"], "disk_full")
+
+    def test_export_ignore_space_bypasses(self):
+        repo = {"steps": ["export", "splice"], "collections": [],
+                "total": 10 * 1024 ** 3, "free": 1, "enough": False, "short": 10}
+        with mock.patch("vedio.space.project_batch", return_value=repo):
+            code, out, err = self.run_cli("export", *self.base(),
+                                          "--collections", "合集一",
+                                          "--ignore-space", "--json")
+        # 跳过预检 → 会去调剪映（测试环境没有，必然失败；但不是 disk_full）
+        self.assertNotIn("disk_full", err)
+
+    def test_run_refuses_when_space_short(self):
+        repo = {"steps": ["export"], "collections": [], "total": 10 * 1024 ** 3,
+                "free": 1, "enough": False, "short": 10 * 1024 ** 3}
+        with mock.patch("vedio.space.project_batch", return_value=repo):
+            code, out, err = self.run_cli("run", *self.base(),
+                                          "--steps", "export", "--json")
+        self.assertEqual(code, cli.EXIT_FAIL)
+        self.assertEqual(json.loads(err)["error"], "disk_full")
 
     def test_all_verbs_have_help(self):
         """十一个动词都要能加载（防 import 错误）"""

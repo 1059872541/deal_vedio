@@ -182,6 +182,57 @@ def check_video_params(project: Project, info: dict) -> list[str]:
     return problems
 
 
+#: 各分辨率的经验码率（Mbps）——导出前估空间用，宁可估高
+_EXPORT_BITRATE_MBPS = {
+    "8K": 60.0, "4K": 40.0, "2K": 20.0, "1080P": 9.0, "720P": 4.5, "480P": 2.0,
+}
+
+#: 估算时额外留的余量（剪映的码率浮动 + 容器开销）
+EXPORT_SPACE_HEADROOM = 1.15
+
+
+def estimate_export_bytes(project: Project, seconds: float) -> int:
+    """估算一次导出会写多少字节。
+
+    导出时长按**素材总时长**估 —— 草稿就是素材剪出来的，只会更短，不会更长。
+    码率按配置分辨率查经验值（剪映「推荐」码率大致就这个量级）。
+    """
+    key = str(project.rule("export.resolution", "1080P") or "1080P").strip().upper()
+    mbps = _EXPORT_BITRATE_MBPS.get(key, 9.0)
+    return int(seconds * mbps * 1_000_000 / 8 * EXPORT_SPACE_HEADROOM)
+
+
+def check_export_space(project: Project, collection: Collection) -> tuple[bool, int, int]:
+    """导出前查空间。
+
+    Returns:
+        (够不够, 需要字节, 剩余字节)
+
+    为什么要有：导出是这台机器上最慢的一步（一个合集 5~15 分钟），
+    等它跑完才因为 ENOSPC 失败，等于白等。而且失败时剪映那边已经切了一半。
+    """
+    import shutil as _shutil
+
+    seconds = 0.0
+    try:
+        for video in media.list_videos(collection.material):
+            seconds += media.probe_duration(project.ffprobe, video)
+    except OSError:
+        seconds = 0.0
+    if seconds <= 0:
+        seconds = float(project.rule("duration.material_per_collection", 0) or 0)
+    needed = estimate_export_bytes(project, seconds)
+
+    probe = collection.editing
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    try:
+        free = _shutil.disk_usage(probe).free
+    except OSError:
+        return True, needed, 0          # 统计失败别拦着
+    return free >= needed, needed, free
+
+
 # ─────────────────────────── 单个合集 ───────────────────────────
 
 def export_collection(project: Project, collection: Collection, controller=None,
@@ -223,13 +274,51 @@ def export_collection(project: Project, collection: Collection, controller=None,
                                 target=path, seconds=seconds,
                                 message=f"剪辑/ 里已有 {path.name}（{media.hhmmss(seconds)}）")
 
+    # ── 2.5 空间预检：不够就别去点剪映了 ──
+    # 导出是最慢的一步（5~15 分钟/合集）。跑完才因为 ENOSPC 失败 = 白等一场，
+    # 而且剪映那边已经切到一半。宁可开跑前算清楚。
+    enough, needed, free = check_export_space(project, collection)
+    if not enough:
+        msg = (f"磁盘空间不够：导出预计需要约 {needed / 1024 ** 3:.1f} GB，"
+               f"目标盘只剩 {free / 1024 ** 3:.1f} GB。"
+               f"先腾出 {(needed - free) / 1024 ** 3:.1f} GB 再跑。")
+        if log is not None:
+            log.emit("export", FAIL, name, error="disk_full", message=msg,
+                     needed=needed, free=free)
+        return ExportResult(collection=name, status="fail", error="disk_full",
+                            draft=draft, message=msg)
+    print(f"空间预检：预计需要 {needed / 1024 ** 3:.1f} GB，目标盘剩余 {free / 1024 ** 3:.1f} GB ✅")
+
+    # 后续环节的提醒（不拦）：导出只是第一步，拼接才是吃空间的大头。
+    # 只提示不拒绝 —— 你可能打算导完先腾空间；但不说的话，
+    # 就是"导出顺利、拼接到一半没地方写"。
+    try:
+        from .. import space as space_mod
+        later = space_mod.project_batch(project, [name], ["splice"])
+        if later["total"] and not later["enough"]:
+            print(f"  ⚠ 注意：后续拼接还需约 {space_mod.gb(later['total'])}，"
+                  f"当前剩余 {space_mod.gb(later['free'])} —— 导出后可能不够")
+    except Exception:
+        pass
+
     # ── 3. 调控制器 ──
     if controller is None:
-        if controller_factory is None:
-            from jianying_export import JianyingController
-            controller = JianyingController()
-        else:
-            controller = controller_factory()
+        try:
+            if controller_factory is None:
+                from jianying_export import JianyingController
+                controller = JianyingController()
+            else:
+                controller = controller_factory()
+        except Exception as exc:
+            # 最常见：剪映没开。裸抛 traceback 对用户毫无用处。
+            message = (f"连不上剪映：{exc}。"
+                       f"请先打开剪映专业版（停在首页即可），再重跑。")
+            if log is not None:
+                log.emit("export", FAIL, name, error="jianying_unavailable",
+                         message=message)
+            return ExportResult(collection=name, status="fail",
+                                error="jianying_unavailable", draft=draft,
+                                message=message)
 
     if enums is None:
         from jianying_export import ExportFramerate, ExportResolution

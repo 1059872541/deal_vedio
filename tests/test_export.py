@@ -249,6 +249,44 @@ class TestExportCollection(ExportCase):
 
 # ─────────────────────────── 参数核对 ───────────────────────────
 
+class TestExportSpace(ExportCase):
+    """导出前也要查空间 —— 这点最慢，跑完才发现没地方写等于白等。"""
+
+    def test_estimate_by_resolution(self):
+        class P:
+            def rule(self, key, default=None):
+                return {"export.resolution": "1080P"}.get(key, default)
+        need = X.estimate_export_bytes(P(), 1200.0)
+        # 1200 秒 × 9 Mbps ÷ 8 × 1.15 ≈ 1.55 GB
+        self.assertGreater(need, 1.4 * 1024 ** 3)
+        self.assertLess(need, 1.7 * 1024 ** 3)
+
+    def test_unknown_resolution_falls_back(self):
+        class P:
+            def rule(self, key, default=None):
+                return default
+        need = X.estimate_export_bytes(P(), 600.0)
+        self.assertGreater(need, 0)
+
+    def test_insufficient_space_fails_without_touching_jianying(self):
+        fake = FakeController()
+        with mock.patch.object(X, "check_export_space", return_value=(False, 5 * 1024 ** 3, 1024)):
+            result = X.export_collection(self.p, self.p.collection("合集一"), fake,
+                                         log=self.log, enums=self.enums)
+        self.assertEqual(result.status, "fail")
+        self.assertEqual(result.error, "disk_full")
+        self.assertIn("磁盘空间不够", result.message)
+        self.assertEqual(fake.calls, [])       # 一次都没调剪映
+
+    def test_enough_space_proceeds(self):
+        fake = FakeController()
+        with mock.patch.object(X, "check_export_space", return_value=(True, 1, 10 ** 12)):
+            result = X.export_collection(self.p, self.p.collection("合集一"), fake,
+                                         log=self.log, enums=self.enums)
+        self.assertEqual(result.status, "done")
+        self.assertTrue(fake.calls)
+
+
 class TestCheckParams(ExportCase):
     """剪映的分辨率下拉没法程序选，所以导出后必须核对产物实际值。"""
 

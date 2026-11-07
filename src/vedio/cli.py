@@ -234,10 +234,36 @@ def _add_collections(args: argparse.Namespace, init_stage) -> int:
 
 def cmd_export(args: argparse.Namespace, project: context.Project) -> int:
     """批量导出草稿（会点剪映，耗时最长）"""
+    from . import space
     from .events import EventLog
     from .stages import export as export_stage
 
     log = EventLog(project.log_dir)
+
+    # ── 导出前把「导出 + 拼接」一起算 ──
+    # 只算导出是不够的：实测导出顺利、花 5 分钟写满 2.8 GB，然后卡在拼接上。
+    # 拼接才是吃空间的大头，所以必须一起算 —— 不够就别开始导。
+    if not getattr(args, "ignore_space", False):
+        try:
+            report = space.project_batch(project, _split_list(args.collections),
+                                         ["export", "splice"])
+        except Exception:
+            report = None
+        if report is not None and not report["enough"]:
+            text = space.render(report)
+            if args.json:
+                payload = {"ok": False, "error": "disk_full", "space": report,
+                           "message": f"导出+拼接共需 {space.gb(report['total'])}，"
+                                      f"只剩 {space.gb(report['free'])}"}
+                print(json.dumps(payload, ensure_ascii=False, indent=2), file=_result_err())
+            else:
+                print("磁盘空间不够，先不导出（否则导完也拼不了）：\n" + text, file=_result_err())
+                print("  打算先导出、之后再腾空间 → 加 --ignore-space", file=_result_err())
+            return EXIT_FAIL
+        if report is not None and not args.json:
+            # 够也要说出来 —— 否则"预检到底跑没跑"只能靠猜
+            print(space.render(report))
+
     with _quiet_stdout(args.json):
         batch = export_stage.export_drafts(
             project,
@@ -456,10 +482,30 @@ def cmd_ledger(args: argparse.Namespace, project: context.Project) -> int:
 def cmd_run(args: argparse.Namespace, project: context.Project) -> int:
     """按步骤推进（可夜里跑）"""
     from .events import EventLog
+    from . import space
     from .stages import run as run_stage
 
     steps = _split_list(args.steps)
     log = EventLog(project.log_dir)
+
+    # ── 整轮空间预检 ──
+    # 各环节自己预检是"各管各的"：导出够、拼接不够 → 先花 5 分钟导出、
+    # 写满 2.8 GB，然后卡在拼接上。这里一次算总账，不够就根本不开跑。
+    try:
+        report = space.project_batch(project, _split_list(args.collections), steps)
+    except Exception:
+        report = None
+    if report is not None and not report["enough"]:
+        text = space.render(report)
+        if args.json:
+            payload = {"ok": False, "error": "disk_full", "space": report,
+                       "message": f"整轮需要 {space.gb(report['total'])}，"
+                                  f"只剩 {space.gb(report['free'])}"}
+            print(json.dumps(payload, ensure_ascii=False, indent=2), file=_result_err())
+        else:
+            print("磁盘空间不够，这一轮不开跑：\n" + text, file=_result_err())
+        return EXIT_FAIL
+
     try:
         with _quiet_stdout(args.json):
             report = run_stage.run(project, steps, _split_list(args.collections), log=log)
@@ -577,6 +623,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_export.add_argument("--collections", help="只导这些合集，逗号分隔；不传=全部")
     p_export.add_argument("--force", action="store_true",
                           help="即使 剪辑/ 里已有片子也重导")
+    p_export.add_argument("--ignore-space", action="store_true",
+                          help="跳过「导出+拼接」空间预检（打算先导、之后再腾空间时用）")
     p_export.set_defaults(handler=cmd_export)
 
     p_init = sub.add_parser("init", help="建批次（不需要批次已存在）")
