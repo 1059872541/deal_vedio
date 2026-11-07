@@ -37,8 +37,11 @@ r"""vedio.context —— 目录约定与配置的**唯一实现**。
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -153,6 +156,157 @@ class LocalConfig:
             ffprobe=str(tool.get("ffprobe") or "ffprobe"),
             window_title=str(jy.get("window_title") or "剪映专业版"),
         )
+
+
+# ─────────────────────────── 剪映草稿索引 ───────────────────────────
+
+@dataclass(frozen=True)
+class Draft:
+    """剪映里的一个草稿。"""
+
+    name: str                                # 界面显示名（人工命名）
+    folder: Path                             # 实际目录
+    seconds: float = 0.0                     # 时长；0 = 未知
+    modified: str | None = None              # "YYYY-MM-DD HH:MM"
+    root: Path | None = None                 # 所属草稿根
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "draft": self.name,
+            "folder": str(self.folder),
+            "seconds": round(self.seconds, 1),
+            "modified": self.modified,
+        }
+
+
+def jianying_index_paths() -> list[Path]:
+    """剪映草稿索引 ``root_meta_info.json`` 的所有候选位置。
+
+    索引在剪映的用户数据目录里，**不在草稿目录里**：:
+
+        %LOCALAPPDATA%\\JianyingPro\\User Data\\Projects\\<项目id>\\root_meta_info.json
+
+    ``<项目id>`` 通常是 ``com.lveditor.draft``；用通配是为了跳过没有索引的
+    兄弟目录（实测 ``com.lveditor.textTemplate.draft`` 就没有）。
+    """
+    base = os.environ.get("LOCALAPPDATA")
+    if not base:
+        return []
+    projects = Path(base) / "JianyingPro" / "User Data" / "Projects"
+    if not projects.is_dir():
+        return []
+    return sorted(projects.glob("*/root_meta_info.json"))
+
+
+def _read_json_tolerant(path: Path) -> Any:
+    """读 JSON：容忍 BOM；剪映运行时可能短暂占用文件，失败就当没有。"""
+    for encoding in ("utf-8-sig", "utf-8"):
+        try:
+            return json.loads(path.read_text(encoding=encoding))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        except OSError:
+            return None
+    return None
+
+
+def _us_to_seconds(value: Any) -> float:
+    """剪映的时间量与时间戳都是微秒。"""
+    try:
+        return float(value) / 1_000_000.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _us_to_stamp(value: Any) -> str | None:
+    seconds = _us_to_seconds(value)
+    if seconds <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(seconds).strftime("%Y-%m-%d %H:%M")
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _norm_path(p: Path) -> str:
+    return str(p).replace("\\", "/").rstrip("/").lower()
+
+
+def load_jianying_index(
+    root_hint: Path | None = None,
+    index_paths: Iterable[str | Path] | None = None,
+) -> list[Draft]:
+    """从剪映索引读出草稿列表（按最近修改倒序）。
+
+    Args:
+        root_hint: 给了就只保留该草稿根下的草稿（``本机.yaml`` 手填时用）。
+        index_paths: 显式指定索引文件（测试用）；默认自动找。
+
+    Returns:
+        草稿列表。索引不存在或损坏 → 空列表（**不是错误**，调用方自己决定要不要问人）。
+    """
+    paths = list(index_paths) if index_paths is not None else jianying_index_paths()
+    candidates: list[Draft] = []
+    for p in paths:
+        data = _read_json_tolerant(Path(p))
+        if not isinstance(data, dict):
+            continue
+        for entry in data.get("all_draft_store") or []:
+            name = str(entry.get("draft_name") or "").strip()
+            fold = str(entry.get("draft_fold_path") or "")
+            if not name or not fold:
+                continue
+            folder = Path(fold)
+            root = Path(entry["draft_root_path"]) if entry.get("draft_root_path") else folder.parent
+            if root_hint is not None and _norm_path(root) != _norm_path(root_hint):
+                continue
+            candidates.append(Draft(
+                name=name,
+                folder=folder,
+                seconds=_us_to_seconds(entry.get("tm_duration")),
+                modified=_us_to_stamp(entry.get("tm_draft_modified")),
+                root=root,
+            ))
+    # 同一草稿可能出现在多份索引里；按 (名字, 目录) 去重，留最新的那条
+    best: dict[tuple[str, str], Draft] = {}
+    for d in candidates:
+        key = (d.name, _norm_path(d.folder))
+        if key not in best or (d.modified or "") > (best[key].modified or ""):
+            best[key] = d
+    return sorted(best.values(), key=lambda d: (d.modified or ""), reverse=True)
+
+
+def drafts_from_listdir(root: Path) -> list[Draft]:
+    """兜底：直接扫目录。**名字不一定准**（文件夹名可能不等于显示名）。"""
+    if not root.is_dir():
+        return []
+    out = [
+        Draft(name=p.name, folder=p, root=root)
+        for p in root.iterdir()
+        if p.is_dir() and (p / "draft_content.json").is_file()
+    ]
+    return sorted(out, key=lambda d: d.name)
+
+
+def discover_jianying_root(index_paths: Iterable[str | Path] | None = None) -> Path | None:
+    """自动找出剪映草稿根目录，找不到返回 ``None``。
+
+    比"全盘搜 draft_content.json"可靠：索引是剪映自己维护的当前列表，而全盘搜
+    会搜到用户以前用过的**旧草稿根**（实测搜到过一份三个月前的，6 个草稿全是废弃的）。
+
+    兜底策略：返回 None 时应当**问用户**，不要瞎猜一个。
+    """
+    counts: dict[str, tuple[int, float, Path]] = {}
+    for d in load_jianying_index(index_paths=index_paths):
+        if d.root is None:
+            continue
+        key = _norm_path(d.root)
+        n, total, path = counts.get(key, (0, 0.0, d.root))
+        counts[key] = (n + 1, total + d.seconds, path)
+    if not counts:
+        return None
+    # 草稿最多的根胜出；平手时取时长合计更长的
+    return max(counts.values(), key=lambda v: (v[0], v[1]))[2]
 
 
 # ─────────────────────────── 标题文件 ───────────────────────────
@@ -323,6 +477,7 @@ class Project:
         self._manifest = manifest
         self._local = local
         self._titles: Titles | None = None
+        self._drafts: list[Draft] | None = None
 
     # ── 构造 ──
 
@@ -415,9 +570,7 @@ class Project:
     def log_dir(self) -> Path:
         return self.batch_dir / "log"
 
-    @property
-    def draft_dir(self) -> Path | None:
-        return self._local.draft_dir
+    # draft_dir 的定义见下面「剪映草稿」一节（会回落到自动发现）
 
     # ── 规则（game.yaml，只读） ──
 
@@ -599,27 +752,52 @@ class Project:
             return self.collections()
         return [self.collection(n) for n in wanted]
 
-    # ── 剪映草稿（人工命名，只能读目录列候选） ──
+    # ── 剪映草稿（人工命名；靠剪映索引查，不靠猜文件夹名） ──
+
+    def drafts(self) -> list[Draft]:
+        """剪映里的草稿列表（界面显示名 + 实际目录 + 时长）。
+
+        数据源是剪映自己维护的 ``root_meta_info.json`` —— **它是明文 JSON**
+        （与加密的 ``draft_content.json`` 不同），里面有：:
+
+            all_draft_store[i].draft_name       界面显示名，如 "MC-合集一"
+            all_draft_store[i].draft_fold_path  实际目录，如 ".../JianyingPro Drafts/11月7日"
+            all_draft_store[i].draft_root_path  草稿根
+            all_draft_store[i].tm_duration      时长（微秒）
+
+        **关键：文件夹名 ≠ 界面显示名。** 实测某草稿文件夹叫 ``11月7日``，
+        界面上显示的是 ``MC-合集一``。所以只看 listdir 会拿到错名字。
+        """
+        if self._drafts is None:
+            self._drafts = load_jianying_index(self._local.draft_dir)
+            if not self._drafts and self._local.draft_dir is not None:
+                # 索引不可用（剪映没装/从没开过）但手填了目录 → 退化为扫目录
+                self._drafts = drafts_from_listdir(self._local.draft_dir)
+        return self._drafts
+
+    @property
+    def draft_dir(self) -> Path | None:
+        """草稿根目录。`本机.yaml` 没填就自动发现。"""
+        if self._local.draft_dir is not None:
+            return self._local.draft_dir
+        return discover_jianying_root()
 
     def available_drafts(self) -> list[str]:
-        """剪映首页上能看到的草稿名。
-
-        剪映 6.x 的草稿 = ``draft_dir`` 下一个含 ``draft_content.json`` 的文件夹，
-        **文件夹名就是界面显示的名字**。所以不开剪映也能列候选。
-        """
-        d = self._local.draft_dir
-        if d is None or not d.is_dir():
-            return []
-        return sorted(
-            p.name for p in d.iterdir()
-            if p.is_dir() and (p / "draft_content.json").is_file()
-        )
+        """剪映首页上能看到的草稿**显示名**，按最近修改倒序。"""
+        return [d.name for d in self.drafts()]
 
     def draft_candidates(self, collection: str) -> list[str]:
-        """给「这个合集对应哪个草稿」用的候选：本批次还没被别的合集占用的草稿。"""
+        """「这个合集该选哪个草稿」的候选：还没被别的合集占用的那些。"""
         taken = {v for v in (self._manifest.get("drafts") or {}).values()}
         mine = self.draft_for(collection)
-        return [d for d in self.available_drafts() if d not in taken or d == mine]
+        return [d.name for d in self.drafts() if d.name not in taken or d.name == mine]
+
+    def draft_info(self, name: str) -> Draft | None:
+        """按显示名查一个草稿。"""
+        for d in self.drafts():
+            if d.name == name:
+                return d
+        return None
 
     # ── 体检 ──
 

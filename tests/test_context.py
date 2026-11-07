@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 SRC = REPO / "src"
@@ -104,6 +105,11 @@ class TempDirCase(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
+        # 隔离真实机器：默认认为"这台机器没装剪映 / 没有索引"。
+        # 不这么做的话，开发机上真实存在的草稿会漏进测试结果。
+        patcher = mock.patch.object(C, "jianying_index_paths", return_value=[])
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def open(self, **kw):
         local = build_batch(self.tmp, **kw)
@@ -435,6 +441,131 @@ class TestDraftRegistry(TempDirCase):
         self.assertEqual(p.draft_candidates("合集三"), ["MC-合集三"])
         # 合集一自己的名字仍在候选里（用于重认）
         self.assertIn("MC-合集一", p.draft_candidates("合集一"))
+
+
+# ─────────────────────────── 剪映索引（草稿发现） ───────────────────────────
+
+INDEX_ENTRY = {
+    "draft_cloud_last_action_download": False,
+    "draft_cover": "D:/drafts/11月7日/draft_cover.jpg",
+    "draft_fold_path": "D:/drafts/11月7日",
+    "draft_id": "DF7B19E3-7119-4466-8120-88B4F6E642DE",
+    "draft_json_file": "D:/drafts/11月7日/draft_content.json",
+    "draft_name": "MC-合集一",
+    "draft_root_path": "D:\\drafts",
+    "tm_duration": 1559600000,
+    "tm_draft_create": 1794034023008284,
+    "tm_draft_modified": 1794034039560346,
+}
+
+
+def write_index(path: Path, entries, root_path: str = "C:/.../com.lveditor.draft"):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"all_draft_store": entries, "draft_ids": len(entries), "root_path": root_path},
+                   ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return path
+
+
+class TestJianyingIndex(TempDirCase):
+    """核心回归：**文件夹名 ≠ 界面显示名**。这是实测踩到的坑。"""
+
+    def test_display_name_comes_from_index_not_folder(self):
+        idx = write_index(self.tmp / "idx" / "root_meta_info.json", [INDEX_ENTRY])
+        drafts = C.load_jianying_index(index_paths=[idx])
+        self.assertEqual(len(drafts), 1)
+        d = drafts[0]
+        self.assertEqual(d.name, "MC-合集一")            # 界面显示名
+        self.assertEqual(d.folder.name, "11月7日")        # 实际文件夹
+        self.assertEqual(d.root, Path("D:\\drafts"))
+
+    def test_duration_in_microseconds(self):
+        idx = write_index(self.tmp / "idx" / "root_meta_info.json", [INDEX_ENTRY])
+        d = C.load_jianying_index(index_paths=[idx])[0]
+        self.assertAlmostEqual(d.seconds, 1559.6, places=1)   # 26:00
+        self.assertIsNotNone(d.modified)
+        self.assertTrue(d.modified.startswith("2026-"))
+
+    def test_missing_index_is_empty_not_error(self):
+        self.assertEqual(C.load_jianying_index(index_paths=[self.tmp / "nope.json"]), [])
+
+    def test_corrupt_index_is_empty_not_error(self):
+        bad = self.tmp / "bad.json"
+        bad.write_text("{not json", encoding="utf-8")
+        self.assertEqual(C.load_jianying_index(index_paths=[bad]), [])
+
+    def test_index_with_bom_is_readable(self):
+        p = self.tmp / "bom.json"
+        p.write_text("\ufeff" + json.dumps({"all_draft_store": [INDEX_ENTRY]}, ensure_ascii=False),
+                     encoding="utf-8")
+        self.assertEqual(len(C.load_jianying_index(index_paths=[p])), 1)
+
+    def test_duplicate_drafts_across_indexes_keep_latest(self):
+        older = dict(INDEX_ENTRY, tm_draft_modified=1700000000000000)
+        a = write_index(self.tmp / "a" / "root_meta_info.json", [older])
+        b = write_index(self.tmp / "b" / "root_meta_info.json", [INDEX_ENTRY])
+        drafts = C.load_jianying_index(index_paths=[a, b])
+        self.assertEqual(len(drafts), 1)
+        self.assertEqual(drafts[0].modified, C.load_jianying_index(index_paths=[b])[0].modified)
+
+    def test_root_hint_filters_other_roots(self):
+        idx = write_index(self.tmp / "idx" / "root_meta_info.json", [INDEX_ENTRY])
+        self.assertEqual(len(C.load_jianying_index(Path("D:/drafts"), [idx])), 1)
+        self.assertEqual(len(C.load_jianying_index(Path("D:/other"), [idx])), 0)
+
+    def test_empty_name_or_folder_skipped(self):
+        good = dict(INDEX_ENTRY)
+        no_name = dict(INDEX_ENTRY, draft_name="")
+        no_folder = dict(INDEX_ENTRY, draft_fold_path="")
+        idx = write_index(self.tmp / "idx" / "root_meta_info.json", [good, no_name, no_folder])
+        self.assertEqual(len(C.load_jianying_index(index_paths=[idx])), 1)
+
+    def test_discover_root_picks_the_one_with_most_drafts(self):
+        rootA = str(self.tmp / "旧根")
+        rootB = str(self.tmp / "新根")
+        entries = [
+            dict(INDEX_ENTRY, draft_name="旧一", draft_folder="x", draft_fold_path=f"{rootA}/a",
+                 draft_root_path=rootA),
+            dict(INDEX_ENTRY, draft_name="新一", draft_fold_path=f"{rootB}/a", draft_root_path=rootB),
+            dict(INDEX_ENTRY, draft_name="新二", draft_fold_path=f"{rootB}/b", draft_root_path=rootB),
+        ]
+        idx = write_index(self.tmp / "idx" / "root_meta_info.json", entries)
+        self.assertEqual(C.discover_jianying_root([idx]), Path(rootB))
+
+    def test_discover_root_returns_none_without_index(self):
+        self.assertIsNone(C.discover_jianying_root([self.tmp / "nope.json"]))
+
+    def test_project_uses_index_when_available(self):
+        drafts_dir = self.tmp / "drafts"
+        (drafts_dir / "11月7日").mkdir(parents=True)
+        (drafts_dir / "11月7日" / "draft_content.json").write_text("{}", encoding="utf-8")
+        idx = write_index(
+            self.tmp / "idx" / "root_meta_info.json",
+            [dict(INDEX_ENTRY, draft_fold_path=str(drafts_dir / "11月7日"),
+                  draft_root_path=str(drafts_dir))],
+        )
+        local = build_batch(self.tmp, manifest=MANIFEST)
+        local["jianying"] = {"draft_dir": str(drafts_dir)}
+        with mock.patch.object(C, "jianying_index_paths", return_value=[idx]):
+            p = C.Project.open("我的世界", "2026-12", local=local)
+            self.assertEqual(p.available_drafts(), ["MC-合集一"])
+            self.assertEqual(p.draft_info("MC-合集一").folder.name, "11月7日")
+
+    def test_project_falls_back_to_listdir_without_index(self):
+        """索引读不到时退化为扫目录 —— 名字可能是文件夹名，但总比空列表强。"""
+        drafts_dir = self.tmp / "drafts"
+        (drafts_dir / "11月7日").mkdir(parents=True)
+        (drafts_dir / "11月7日" / "draft_content.json").write_text("{}", encoding="utf-8")
+        local = build_batch(self.tmp, manifest=MANIFEST)
+        local["jianying"] = {"draft_dir": str(drafts_dir)}
+        p = C.Project.open("我的世界", "2026-12", local=local)   # 索引被 patch 成 []
+        self.assertEqual(p.available_drafts(), ["11月7日"])
+
+    def test_draft_info_unknown_returns_none(self):
+        p = self.open()
+        self.assertIsNone(p.draft_info("不存在的草稿"))
 
 
 # ─────────────────────────── 登记事实：片头片尾 ───────────────────────────
