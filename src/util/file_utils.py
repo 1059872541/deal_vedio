@@ -438,7 +438,7 @@ if __name__ == "__main__":
 
 
 # ============== 视频工具函数（共享） ==============
-# 以下函数供 redistribute_material.py 等脚本共用
+# 以下函数供 balance.py、vedio/ 等调用方共用
 
 def ensure_utf8_stdout():
     """修正 Windows 终端 Unicode 输出"""

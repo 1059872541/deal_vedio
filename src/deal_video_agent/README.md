@@ -173,8 +173,7 @@ Python 3.13+ · langgraph · openai · pydantic · pyyaml · structlog
 
 1. 首次运行会自动生成带行号的 `_ordered.txt`
 2. 剪映期望的 srt 编码是 UTF-8 **带 BOM**，`update_srt` 已按此写出
-3. 字幕分段时长（`split_clean_srt`）必须与视频分割时长一致，否则字幕与画面对不上
-4. 终端避免输出 emoji，Windows GBK 控制台会报 `UnicodeEncodeError`
+3. 终端避免输出 emoji，Windows GBK 控制台会报 `UnicodeEncodeError`
 
 ## 相关文档
 

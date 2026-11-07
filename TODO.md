@@ -27,7 +27,7 @@
 
 - [ ] **`auto_splice_mp4.py` 配置外置**：监听目录、片头片尾写死在文件顶部 `WATCH_DIRECTORIES` 常量里，应改为配置文件 + 环境变量覆盖，支持改配置不重启
 
-- [ ] **分段时长单一来源**：`SEGMENT_DURATION = 360`（视频分割）与 `split_clean_srt.py` 的 `duration = 6`（字幕分段）必须手工保持一致，改一处就会字幕画面对不上。应收敛为一个配置项
+- [ ] **分段时长单一来源**：`SEGMENT_DURATION = 360`（视频分割）应改为读 `game.yaml` 的 `duration.episode_body`，不再写死在代码里（旧版与 `split_clean_srt.py` 的耦合已随该文件删除而消失）
 
 ## P2 — 未来可能
 

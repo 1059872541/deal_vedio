@@ -2,7 +2,9 @@
 
 从剪映草稿到成片、台账的批量生产线。录制与剪辑由人完成，其余环节自动跑。
 
-> **正在重构中。** 目标架构见 [`docs/目标架构.md`](docs/目标架构.md)，
+> **正在重构中。**
+> 现状流程（AS-IS，27 步、谁做、耗时、现用脚本）见 [`docs/流水线现状.md`](docs/流水线现状.md)，
+> 目标架构（TO-BE）见 [`docs/目标架构.md`](docs/目标架构.md)，
 > 本次交付范围见 [`docs/本次交付预期.md`](docs/本次交付预期.md)。
 
 ---
@@ -101,7 +103,7 @@ AI 会按 [`AGENTS.md` §1](AGENTS.md) 自动做这些事：
 | 步骤 | 功能 | 实现 | 完成度 |
 |------|------|------|--------|
 | 0a | 创建项目目录结构 | `src/scaffold/new_project_01_AI_USE.py` | ⚙️ |
-| 0b | 素材跨合集时长均衡 | `.claude/skills/material-redistribute/` | 🎯 |
+| 0b | 素材跨合集时长均衡 | `src/util/balance.py` | ⚙️ |
 
 ### 阶段一：素材准备与剪辑（人工）
 
@@ -117,22 +119,21 @@ AI 会按 [`AGENTS.md` §1](AGENTS.md) 自动做这些事：
 | 步骤 | 功能 | 实现 | 完成度 |
 |------|------|------|--------|
 | 5 | 导出字幕 srt | 剪映导出 | 👤 |
-| 6 | 字幕清洗为 txt | `src/words/split_clean_srt.py` | ⚙️ |
-| 7 | 添加行号 | `agent/tools/add_line_order.py` | 🤖 |
-| 8 | LLM 字幕纠正 + 标题生成 | `src/deal_video_agent/` | 🤖 |
-| 9 | 回写 srt | `agent/tools/update_srt.py` | 🤖 |
-| 10 | 导入剪映替换字幕 | — | 待开发 |
+| 6 | 添加行号 | `agent/tools/add_line_order.py` | 🤖 |
+| 7 | LLM 字幕纠正 + 标题生成 | `src/deal_video_agent/` | 🤖 |
+| 8 | 回写 srt | `agent/tools/update_srt.py` | 🤖 |
+| 9 | 导入剪映替换字幕 | — | 待开发 |
 
 ### 阶段三：视频后处理
 
 | 步骤 | 功能 | 实现 | 完成度 |
 |------|------|------|--------|
-| 11 | 分割 + 片头片尾拼接 | `src/splice_vedio/auto_splice_mp4.py` | ⚙️ |
-| 12 | 批量重命名 | `.claude/skills/batch-video-renamer/` | 🎯 |
-| 13 | 片单 Excel 生成 | 外部 skill `excel-sheet-generator`（不在本仓库） | 🎯 |
-| 14 | 上传 / 整理网盘 | 百度网盘 MCP、夸克 MCP | 🎯 能力已具备，待封装 |
+| 10 | 分割 + 片头片尾拼接 | `src/splice_vedio/auto_splice_mp4.py` | ⚙️ |
+| 11 | 批量重命名 | `.claude/skills/batch-video-renamer/` | 🎯 |
+| 12 | 片单 Excel 生成 | 外部 skill `excel-sheet-generator`（不在本仓库） | 🎯 |
+| 13 | 上传 / 整理网盘 | 百度网盘 MCP、夸克 MCP | 🎯 能力已具备，待封装 |
 
-> 步骤 14 说明：两个 MCP Server 已提供 `upload_file` / `move` / `rename` / `regex_rename` 等工具，**不需要新写 Python 模块**，缺的只是一个把"成片目录 → 网盘目录"流程固定下来的 skill。
+> 步骤 13 说明：两个 MCP Server 已提供 `upload_file` / `move` / `rename` / `regex_rename` 等工具，**不需要新写 Python 模块**，缺的只是一个把"成片目录 → 网盘目录"流程固定下来的 skill。
 
 ---
 
@@ -152,7 +153,8 @@ deal_vedio/
 │
 ├── .claude/skills/            # LLM 编排用的 Skill
 │   ├── batch-video-renamer/   # 视频批量重命名（入 git）
-│   └── material-redistribute/ # 素材时长均衡（入 git）
+│   ├── baiducloud-operate/    # 百度网盘 MCP 用法（含 Token，不入库）
+│   └── quarkpan-mcp-operate/  # 夸克网盘 MCP 用法（含 Token，不入库）
 │
 ├── tools/
 │   └── quark-nd-mcp/          # 夸克网盘 MCP Server（预编译 exe）
@@ -228,16 +230,22 @@ python src/splice_vedio/auto_splice_mp4.py
 
 ⚠️ 监听目录与片头片尾目前写在文件顶部的 `WATCH_DIRECTORIES` 常量里，尚未外置为配置文件。这是已知待改进项。
 
-### 4. 字幕清洗与回写 — `src/words/`
+### 4. 字幕回写 — `src/words/`
 
-- `split_clean_srt.py` — 把 srt 按 6 分钟切段，去时间戳，输出纯文本 `words/第X集.txt`
 - `updateSRT.py` — 把 `corrected.txt`（格式 `行号:纠正后内容`）回写为新 srt
 
-> 两者的 6 分钟要与视频分割的 `SEGMENT_DURATION = 360` 保持一致，否则字幕与画面对不上。这个耦合目前靠人工保证。
+> 旧版 `split_clean_srt.py`（按 6 分钟切 srt、去时间戳）已于 2026-11-07 删除：字幕在剪映导出时已烧录进画面，不需要再切分 srt。
 
-### 5. 素材时长均衡 — `.claude/skills/material-redistribute/`
+### 5. 素材时长均衡 — `src/util/balance.py`
 
-扫描各合集累加时长，超限的用 ffmpeg 关键帧切割（`-c copy`），溢出段以 `{N}-0.mkv` 移入下一合集，级联处理。支持断点续跑（`.redistribute_log.json`）。
+扫描各合集累加时长，超限的用 ffmpeg 关键帧切割（`-c copy`），溢出段移入下一合集。
+
+```bash
+python src/util/balance.py check --game 我的世界 --batch 2026-12
+python src/util/balance.py move  --game 我的世界 --batch 2026-12 --from 合集一 --to 合集二 --apply
+```
+
+> 原 `.claude/skills/material-redistribute/` 已于 2026-11-07 删除：它和 `balance.py` 是同一件事的两套实现，且旧版路径写死、不支持跨批次。`balance.py` 有 37 个单测，是唯一保留的实现。
 
 ### 6. 视频重命名 — `.claude/skills/batch-video-renamer/`
 
@@ -272,7 +280,7 @@ Python 3.13 · FFmpeg（含 Intel QSV 硬编）· LangGraph · DeepSeek API · u
 | 字幕纠正（手工 10–20 分钟） | `deal_video_agent` | 🤖 已自动 |
 | 标题生成（手工与 AI 对话） | `deal_video_agent` | 🤖 已自动 |
 | 剪映导出（等待 40 分钟） | `jianying_export` | ⚙️ 已自动化 |
-| 素材跨合集时长不均 | `material-redistribute` | 🎯 已自动 |
+| 素材跨合集时长不均 | `src/util/balance.py` | ⚙️ 已自动 |
 | 视频批量重命名 | `batch-video-renamer` | 🎯 已自动 |
 | 片单 Excel 填写 | 外部 skill | 🎯 已自动 |
 | 网盘上传整理 | MCP 已具备能力 | 待封装 |

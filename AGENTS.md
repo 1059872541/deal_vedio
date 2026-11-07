@@ -153,11 +153,12 @@ Get-ChildItem "<workspace.root>" -Directory
     ├── 片头\  片尾\       ← 已合成的成品，拼接时直接用
     ├── 术语库\
     ├── log\
+    ├── 标题.md            ← 公共前缀 + 每合集一节（副标题 + 20 条标题）。重命名和台账都读它
+    ├── 合集清单.yaml       ← 草稿名、片头片尾映射。程序写，人只核对
     ├── 台账.xlsx
     └── 合集\合集X\
         ├── 素材\          ← OBS 原始录屏
         ├── 剪辑\          ← 草稿、2h 导出、.srt、corrected.txt
-        ├── 标题.md        ← 每集标题（重命名和台账都读它）
         └── 成片\          ← 20 个成片
 ```
 
@@ -216,16 +217,15 @@ Get-ChildItem "<workspace.root>" -Directory
 
 所以只在**开始拼接之前**校验，三项都要满足：
 
-1. `game.yaml` 的 `templates.intro_mapping` 能解析出本合集的片头（按合集名查，查不到用 `default`）
+1. `合集清单.yaml` 的 `templates.intro_mapping` 能解析出本合集的片头（按合集名查，查不到用 `default`）
 2. `templates.outro` 有值
 3. 这两个路径指向的文件**真实存在**
 
 **任一项不满足 → 立即停下，不要开始拼接，也不要拿别的文件代替。** 这样告诉用户：
 
-> 合集一还缺片头（`game.yaml` 里 `templates.intro_mapping` 是空的）。
+> 合集一还缺片头（`合集清单.yaml` 里 `templates.intro_mapping` 是空的）。
 > 拼接是「片头 + 正片 + 片尾」，缺了拼不出来。
-> 录好放到 `片头/` 目录，然后在 `game.yaml` 的 `templates` 里登记一行，我再继续。
-> 要我把这条登记也做了吗？
+> 录好放到 `片头/` 目录，我把它登记进 `合集清单.yaml`，然后再继续。
 
 三项齐全后才可以继续拼接。
 
@@ -256,6 +256,6 @@ Get-ChildItem "<workspace.root>" -Directory
 
 `vedio` 命令行**尚未实现**。若用户要求执行，如实告诉他：
 
-> 这部分还在开发中。现在能做的只有：查看设计文档（`docs/目标架构.md`）和调整规则（`conf/`）。
+> 这部分还在开发中。现在能做的只有：查看设计文档（`docs/目标架构.md`、`docs/流水线现状.md`）和调整规则（`conf/`）。
 
 不要模拟执行结果。

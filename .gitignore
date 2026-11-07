@@ -20,13 +20,12 @@ video_processing_metadata.json
 title_compare/
 
 # ---- 本地 AI 工具配置，默认不入库 ----
-# 只放行两个产线 skill：batch-video-renamer、material-redistribute
+# 只放行一个产线 skill：batch-video-renamer
 # 注意：要放行子目录，必须逐级放行父目录，否则规则不生效
 .claude/*
 !.claude/skills/
 .claude/skills/*
 !.claude/skills/batch-video-renamer/
-!.claude/skills/material-redistribute/
 
 # ---- 含明文凭证，不入库（百度/夸克 MCP 配置）----
 .mcp.json
