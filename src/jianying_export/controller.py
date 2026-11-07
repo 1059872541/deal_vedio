@@ -380,7 +380,16 @@ class JianyingController:
         ok_btn.Click(simulateMove=False)
 
         # ── 7. 等导出完成 ──
-        self._wait_export_done(timeout)
+        # ── 7. 等导出完成：**以文件为准** ──
+        #
+        # 原实现等的是「导出成功」弹窗上的关闭按钮（`ExportSucceedCloseBtn`），
+        # 但那个标识从没在 6.0.1 真机上验证过 —— 实测导出明明写完了 1.33 GB，
+        # 它还在傻等，最后只能超时。现在改成看目标文件：出现、非零、连续两次
+        # 采样大小不变 = 写完。
+        self._wait_export_file(Path(export_path), timeout=timeout)
+
+        # 顺手把可能出现的成功弹窗关掉 —— 认不出来也没关系，文件已经好了
+        self._dismiss_success_dialog()
 
         # ── 8. 回目录页 ──
         self._safe_refresh()
@@ -452,27 +461,36 @@ class JianyingController:
                 pass
             raise
 
-    def _wait_export_done(self, timeout: float) -> None:
-        """等导出完成。
+    def _wait_export_file(self, path: Path, timeout: float) -> None:
+        """等目标文件写完：出现、非零、连续两次采样大小不变。
 
-        判据：出现「导出成功」弹窗的关闭按钮。
-        **超时检查放在每轮开头** —— 原实现放在 continue 之后，永远执行不到。
+        为什么不看界面：6.0.1 上「导出成功」弹窗的关闭按钮标识没验证过，
+        实测文件写完了它却始终找不到 → 只能干等到超时。文件是最硬的证据。
         """
-        start = time.time()
-        while True:
-            if time.time() - start > timeout:
-                raise ExportTimeout(f"导出超时，时限为 {timeout:.0f} 秒")
+        if not self._wait_file_stable(path, timeout=timeout):
+            raise ExportTimeout(
+                f"导出超时：{timeout:.0f} 秒内没等到文件写完（{path}）"
+            )
+        size = path.stat().st_size
+        if size <= 0:
+            raise AutomationError(f"导出产物是空文件：{path}")
+        print(f"导出完成：{path}（{size / 1024 / 1024:.1f} MB）")
 
+    def _dismiss_success_dialog(self) -> bool:
+        """关掉「导出成功」弹窗（如果找得到的话）。找不到就静默返回 False。"""
+        try:
             self._safe_refresh()
-            if self.app_status == "pre_export":
-                close_btn = self.app.TextControl(
-                    searchDepth=2, Compare=ControlFinder.desc_matcher("ExportSucceedCloseBtn")
-                )
-                if self._clickable(close_btn):
-                    close_btn.Click(simulateMove=False)
-                    return
-
-            time.sleep(4)
+            close_btn = self.app.TextControl(
+                searchDepth=2, Compare=ControlFinder.desc_matcher("ExportSucceedCloseBtn")
+            )
+            if self._clickable(close_btn):
+                close_btn.Click(simulateMove=False)
+                time.sleep(0.5)
+                return True
+        except Exception:
+            pass
+        # 认不出弹窗，就试着直接把导出面板关掉，别让它挡住后面的操作
+        return self.close_export_panel()
 
     @staticmethod
     def _ensure_video(path: Path) -> None:

@@ -233,55 +233,54 @@ class TestLocateExported(unittest.TestCase):
 
 # ─────────────────────────── 导出完成判定 ───────────────────────────
 
-class TestWaitExportDone(unittest.TestCase):
-    def test_timeout_is_reached(self):
-        """核心回归：原实现的 continue 会跳过超时检查，永远退不出来。
+class TestWaitExportFile(unittest.TestCase):
+    """导出完成的判据是**文件**，不是界面弹窗。
 
-        这里让状态永远不是 pre_export，验证它确实会抛 ExportTimeout。
-        """
-        ctrl = make_controller(app_status="edit")
-        with mock.patch.object(ctrl, "_safe_refresh", return_value=None), \
-             mock.patch.object(C.time, "sleep", return_value=None):
-            with self.assertRaises(exceptions.ExportTimeout):
-                ctrl._wait_export_done(timeout=0)
+    实测教训：6.0.1 上「导出成功」弹窗的关闭按钮标识从没验证过，
+    文件 1.33 GB 都写完了它还在傻等，最后只能超时。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+        patcher = mock.patch.object(C.time, "sleep", return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_export_timeout_is_automation_error(self):
         """超时也要能被 `except AutomationError` 抓到"""
         self.assertTrue(issubclass(exceptions.ExportTimeout, exceptions.AutomationError))
 
-    def test_returns_when_close_button_clickable(self):
+    def test_timeout_when_file_never_appears(self):
+        ctrl = make_controller()
+        with self.assertRaises(exceptions.ExportTimeout):
+            ctrl._wait_export_file(self.dir / "never.mp4", timeout=0)
+
+    def test_returns_when_file_complete(self):
+        target = self.dir / "ok.mp4"
+        target.write_bytes(b"x" * 1024)
+        ctrl = make_controller()
+        ctrl._wait_export_file(target, timeout=5)      # 不抛就算过
+
+    def test_empty_file_times_out(self):
+        """0 字节不算写完 —— 剪映刚建文件时就是 0 字节"""
+        target = self.dir / "empty.mp4"
+        target.write_bytes(b"")
+        ctrl = make_controller()
+        with self.assertRaises(exceptions.ExportTimeout):
+            ctrl._wait_export_file(target, timeout=0)
+
+
+class TestDismissSuccessDialog(unittest.TestCase):
+    def test_falls_back_to_closing_panel(self):
+        """认不出弹窗就关面板 —— 别让它挡住后面的操作"""
         ctrl = make_controller(app_status="pre_export")
-
-        class FakeApp:
-            def __init__(self):
-                self.clicked = 0
-
-            def TextControl(self, **kwargs):
-                outer = self
-                return FakeControl("ExportSucceedCloseBtn")
-
-            def SetTopmost(self, flag=False):
-                pass
-
-            def SetActive(self):
-                pass
-
-        # 直接验 _clickable 通过后会走 Click —— 用一个带 Click 的假控件
-        class Clickable(FakeControl):
-            def __init__(self, app):
-                super().__init__("ExportSucceedCloseBtn")
-                self.app = app
-
-            def Click(self, **kwargs):
-                self.app.clicked += 1
-
-        app = FakeApp()
-        ctrl.app = app
         with mock.patch.object(ctrl, "_safe_refresh", return_value=None), \
-             mock.patch.object(ctrl.app, "TextControl", return_value=Clickable(app)), \
-             mock.patch.object(C.time, "sleep", return_value=None):
-            ctrl._wait_export_done(timeout=5)
-        self.assertEqual(app.clicked, 1)
+             mock.patch.object(ctrl, "_clickable", return_value=False), \
+             mock.patch.object(ctrl, "close_export_panel", return_value=True) as close:
+            self.assertTrue(ctrl._dismiss_success_dialog())
+        close.assert_called_once()
 
 
 # ─────────────────────────── 默认上限 ───────────────────────────

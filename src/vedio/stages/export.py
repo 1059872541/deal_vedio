@@ -98,7 +98,14 @@ def export_params(project: Project, enums: dict) -> dict[str, Any]:
 
     只有这两项能通过界面控制；码率/编码/格式是剪映自己的下拉项，
     读过不到当前值也点不准，靠人第一次配好。
+
+    `export.apply_params: false` 时两项都返回 None —— 一个都不设。
+    为什么需要它：实测 6.0.1 的分辨率/帧率下拉**选项项在 UIA 里不可见**
+    （主窗口整棵树只有 18 个控件），程序点不到。硬试的话每个合集白等 60 秒
+    还折腾界面。关掉之后靠 `check_video_params()` 事后用 ffprobe 核对产物。
     """
+    if project.rule("export.apply_params", True) is False:
+        return {"resolution": None, "framerate": None}
     return {
         "resolution": _enum_by_value(enums["resolution"],
                                      str(project.rule("export.resolution", "") or "")),
