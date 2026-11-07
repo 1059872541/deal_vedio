@@ -21,6 +21,15 @@
 | **代码 + 规则** | 本仓库（`conf/`、`src/`） | git 管理 |
 | **视频数据** | `conf/本机.yaml` 里指定的工作区目录 | 不进 git，体积大 |
 
+**文档也分两类，别混：**
+
+| 目录 | 给谁看 | 是否入库 |
+|---|---|---|
+| `docs/` | **用户**。怎么用、每步交出什么、目录怎么放 | ✅ 入库 |
+| `research/` | **开发者自己**。实测结论、诊断过程、被推翻的假设、复现脚本 | ❌ 不入库 |
+
+**不要指引用户去读 `research/`** —— 换台机器它就不存在了。需要让用户知道的事，必须提炼进 `docs/`。
+
 ---
 
 ## 你的角色
@@ -67,28 +76,28 @@ python -m venv .venv
 
 **问题二：剪映草稿目录在哪？**
 
-> 不要直接问用户，**你先自己找**，找到了给他确认。
-
-剪映每个草稿目录里都有一个 `draft_content.json`，用它来搜：
+> **不用问用户，也不用全盘搜。** 剪映自己维护一份明文索引，直接读它。
 
 ```powershell
-Get-ChildItem C:\, D:\ -Recurse -Depth 4 -Filter draft_content.json -ErrorAction SilentlyContinue |
-  Select-Object -First 20 | ForEach-Object { $_.Directory.FullName }
+Get-Content "$env:LOCALAPPDATA\JianyingPro\User Data\Projects\com.lveditor.draft\root_meta_info.json" -Raw -Encoding UTF8
 ```
 
-把找到的候选列出来，让用户指一个（或说"就是这个"）。找不到就问用户"剪映里能看到草稿吗？"，再引导他去剪映设置里看草稿目录。
+里面的 `all_draft_store[].draft_root_path` 就是当前生效的草稿根，`draft_name` 是界面上显示的草稿名。
+
+读出来之后，用一句话跟用户确认：「我找到你的草稿目录了，里面有 `MC-合集一`、`MC-合集二` 两个草稿，对吗？」
+
+**不要全盘搜 `draft_content.json`** —— 会搜到用户以前用过的旧草稿根（实测搜到过一份三个月前的，6 个废弃草稿全在里面）。索引里的才是当前生效的。
 
 ### 1.4 回填 `conf/本机.yaml`
 
-只改两个值：
+**只需要填一个值**：
 
 ```yaml
 workspace:
   root: "用户选的目录"
-
-jianying:
-  draft_dir: "找到的草稿根目录"
 ```
+
+`jianying.draft_dir` **留空就行** —— 程序会自动读剪映索引发现草稿根。只有自动发现不准时才手填。
 
 然后把结果用一段话告诉用户：环境好了，可以开始了。
 

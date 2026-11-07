@@ -172,7 +172,7 @@ Python 3.13+ · langgraph · openai · pydantic · pyyaml · structlog
 ## 注意事项
 
 1. 首次运行会自动生成带行号的 `_ordered.txt`
-2. 剪映期望的 srt 编码是 UTF-8 **带 BOM**，`update_srt` 已按此写出
+2. `update_srt` 写出的 `_corrected.srt` 是 UTF-8 **无 BOM** + CRLF，与剪映自己导出的 srt 一致
 3. 终端避免输出 emoji，Windows GBK 控制台会报 `UnicodeEncodeError`
 
 ## 相关文档
@@ -181,5 +181,5 @@ Python 3.13+ · langgraph · openai · pydantic · pyyaml · structlog
 |------|------|
 | [`EVOLUTION.md`](../../EVOLUTION.md) | 决策因果链（为什么用 LangGraph / 为什么两层知识库 / 为什么按游戏拆标题文件） |
 | [`TODO.md`](../../TODO.md) | 待办清单 |
-| [`docs/agent_worklog.md`](../../docs/agent_worklog.md) | 需求讨论与实施进度 |
-| [`docs/agent_iteration_20260606.md`](../../docs/agent_iteration_20260606.md) | 单次迭代详录（含改前改后对比） |
+
+> 开发过程日志（worklog、单次迭代详录）已移到本地 `research/`，不入库。
