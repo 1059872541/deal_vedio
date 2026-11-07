@@ -138,6 +138,17 @@ class SpliceCase(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+        # 帧率一律 30 —— 假文件探不出真帧率，默认按"一致"处理，
+        # 需要测不一致的用例自己覆盖
+        fps_patcher = mock.patch.object(media, "probe_fps", return_value=30.0)
+        fps_patcher.start()
+        self.addCleanup(fps_patcher.stop)
+
+        # copy 拼接后的时长校验默认通过；要测"时长不符"的用例自己覆盖
+        dur_patcher = mock.patch.object(SP, "duration_matches", return_value=True)
+        self._duration_matches = dur_patcher.start()
+        self.addCleanup(dur_patcher.stop)
+
     def touch_long(self, name="长片.mp4") -> Path:
         p = self.c.editing / name
         p.write_bytes(b"x" * 10)
@@ -151,6 +162,112 @@ class SpliceCase(unittest.TestCase):
 
 
 # ─────────────────────────── 计划（纯函数） ───────────────────────────
+
+class TestDiskSpace(unittest.TestCase):
+    """拼接前必须先算空间。
+
+    实测踩过：D: 盘剩 0 字节，`splice` 切到第 5 段才失败，报的是
+    「ffmpeg 退出码 4294967268」（= -28 = ENOSPC），没人看得懂，
+    而且已经白写了 0.5 GB 半成品。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+
+    def test_estimate_counts_segments_and_finals(self):
+        source = self.dir / "long.mp4"
+        source.write_bytes(b"x" * 1_000_000)
+        intro = self.dir / "intro.mp4"
+        intro.write_bytes(b"y" * 10_000)
+        outro = self.dir / "outro.mp4"
+        outro.write_bytes(b"z" * 5_000)
+        segs = [object()] * 4        # 只用到 len()
+        needed = SP.estimate_space(source, segs, intro, outro)
+        self.assertGreater(needed, 2_000_000)            # 含片头片尾
+        self.assertLess(needed, 2_600_000)               # 不该离谱
+
+    def test_check_space_not_enough(self):
+        with mock.patch("shutil.disk_usage") as usage:
+            usage.return_value = mock.Mock(free=100)
+            enough, free = SP.check_space(self.dir, 1_000_000)
+        self.assertFalse(enough)
+        self.assertEqual(free, 100)
+
+    def test_disk_full_hint_decodes_enospc(self):
+        self.assertIn("磁盘空间不足", SP._disk_full_hint(4294967268, ""))
+        self.assertIn("磁盘空间不足", SP._disk_full_hint(-28, ""))
+        self.assertIn("磁盘空间不足", SP._disk_full_hint(1, "No space left on device"))
+
+    def test_other_error_keeps_last_line(self):
+        self.assertEqual(SP._disk_full_hint(1, "line1\nInvalid data found"),
+                         "Invalid data found")
+
+
+class TestSpliceDiskPreflight(SpliceCase):
+    """空间不够时**一个字节都不写**，直接报清楚。"""
+
+    def test_fails_before_writing_anything(self):
+        self.touch_long()
+        fake = FakeFfmpeg()
+        with mock.patch.object(SP, "check_space", return_value=(False, 1024)):
+            result = SP.splice_collection(self.p, self.c, log=self.log, runner=fake)
+        self.assertEqual(result.status, "fail")
+        self.assertEqual(result.error, "disk_full")
+        self.assertIn("磁盘空间不够", result.message)
+        self.assertEqual(fake.calls, [])                       # 一条 ffmpeg 都没跑
+        self.assertEqual(list(self.c.final.glob("*.mp4")), [])
+
+    def test_enough_space_proceeds(self):
+        self.touch_long()
+        fake = FakeFfmpeg()
+        with mock.patch.object(SP, "check_space", return_value=(True, 10 ** 12)):
+            result = SP.splice_collection(self.p, self.c, log=self.log, runner=fake)
+        self.assertEqual(result.status, "done")
+        self.assertTrue(fake.calls)
+
+
+class TestFrameRateMismatch(SpliceCase):
+    """帧率不一致时不能走 `-c copy`。
+
+    实测：正片 30fps(time_base 1/15360) + 片头片尾 25fps(1/25)，
+    copy 拼接后**视频时间戳被放大 600 倍**（2 分钟显示 20 小时），
+    而 ffmpeg 退出码是 0 —— 光看返回值根本发现不了。
+    """
+
+    def test_mismatch_forces_encode(self):
+        self.touch_long()
+        fake = FakeFfmpeg()
+        fps_map = {"长片.mp4": 30.0, "intro.mp4": 25.0, "outro.mp4": 25.0}
+        with mock.patch.object(
+            media, "probe_fps",
+            side_effect=lambda ff, p, **kw: fps_map.get(Path(p).name, 30.0),
+        ):
+            result = SP.splice_collection(self.p, self.c, log=self.log, runner=fake)
+        self.assertEqual(result.status, "done")
+        self.assertEqual(result.mode, "encode")
+        self.assertTrue(any("帧率不一致" in w for w in self.log.last(
+            verb="splice", event="done").fields["warnings"]))
+        # 一次 copy 都不该尝试
+        copy_calls = [c for c in fake.calls
+                      if "-f" in c and "concat" in c and "copy" in c]
+        self.assertEqual(copy_calls, [])
+
+    def test_matching_fps_uses_copy(self):
+        self.touch_long()
+        result = self.splice()          # 夹具里帧率统一 30
+        self.assertEqual(result.mode, "copy")
+
+    def test_bad_copy_duration_falls_back(self):
+        """copy 成功但时长不对 → 删掉半成品改重编码"""
+        self.touch_long()
+        fake = FakeFfmpeg()
+        with mock.patch.object(SP, "duration_matches", return_value=False):
+            result = SP.splice_collection(self.p, self.c, log=self.log, runner=fake)
+        self.assertEqual(result.status, "done")
+        self.assertEqual(result.mode, "encode")
+
 
 class TestPlan(unittest.TestCase):
     def plan(self, total, body=60, count=3, tol=3):

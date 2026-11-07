@@ -138,6 +138,41 @@ def probe_video_info(ffprobe: str, path: Path, timeout: float = 60.0) -> dict:
     return {"width": width, "height": height, "fps": round(fps, 2)}
 
 
+def probe_fps(ffprobe: str, path: Path, timeout: float = 60.0) -> float:
+    """读视频平均帧率。读不到返回 0.0。
+
+    用途：`-c copy` 拼接要求各段帧率/timebase 一致，否则时间戳会被按
+    timebase 比例放大（实测 25fps 片头 + 30fps 正片 → 2 分钟的片子
+    显示 20 小时，而且 ffmpeg 退出码还是 0）。
+    """
+    p = Path(path)
+    if not p.is_file():
+        return 0.0
+    cmd = [
+        ffprobe, "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=avg_frame_rate",
+        "-of", "default=noprint_wrappers=1:nokey=1", str(p),
+    ]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 0.0
+    raw = (result.stdout or "").strip().splitlines()
+    if not raw:
+        return 0.0
+    value = raw[0].strip()
+    try:
+        if "/" in value:
+            num, _, den = value.partition("/")
+            return round(float(num) / float(den), 3) if float(den) else 0.0
+        return round(float(value), 3)
+    except ValueError:
+        return 0.0
+
+
 def describe_video_info(info: dict) -> str:
     """`1920x1080@30fps`；读不到就空串"""
     if not info:

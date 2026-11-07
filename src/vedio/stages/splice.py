@@ -73,6 +73,8 @@ class SpliceResult:
     status: str                       # done / skip / fail
     segments: int = 0
     outputs: list[str] = field(default_factory=list)
+    #: 失败时删掉的半成品（免得占着空间还被当成成品）
+    removed: list[str] = field(default_factory=list)
     mode: str = ""                    # copy / encode
     seconds: float = 0.0
     error: Optional[str] = None
@@ -86,6 +88,7 @@ class SpliceResult:
         return {
             "collection": self.collection, "status": self.status,
             "segments": self.segments, "outputs": self.outputs,
+            "removed": self.removed,
             "mode": self.mode, "seconds": round(self.seconds, 1),
             "error": self.error, "message": self.message,
         }
@@ -199,15 +202,22 @@ def concat_copy(runner: Runner, ffmpeg: str, parts: Sequence[Path], out: Path,
 
 
 def concat_encode(runner: Runner, ffmpeg: str, parts: Sequence[Path], out: Path,
-                  encode: dict, timeout: float = 3600) -> None:
+                  encode: dict, timeout: float = 3600,
+                  fps: Optional[float] = None) -> None:
     """回退路径：filter_complex 拼接 + 重编码。
 
-    只有 copy 失败才走这里。慢 20 倍以上，但能兜住"片头片尾参数不一致"。
+    只有 copy 走不通才走这里。慢 20 倍以上，但能兜住"片头片尾参数不一致" ——
+    实测就是这种情况：正片 30fps、片头片尾 25fps，`-c copy` 拼出来时间戳作废
+    （视频显示 20 小时）。这里统一 `fps` 再拼，才是对的。
     """
     if len(parts) != 3:
         raise SpliceError("bad_concat", f"回退拼接收 3 个输入，收到 {len(parts)} 个")
-    filt = "".join(f"[{i}:v]setsar=1[v{i}];[{i}:a]aresample=async=1:first_pts=0[a{i}];"
-                   for i in range(3))
+    fps_part = f",fps={fps:g}" if fps else ""
+    filt = "".join(
+        f"[{i}:v]setsar=1{fps_part},format=yuv420p[v{i}];"
+        f"[{i}:a]aresample=async=1:first_pts=0[a{i}];"
+        for i in range(3)
+    )
     filt += "[v0][a0][v1][a1][v2][a2]concat=n=3:v=1:a=1[vout][aout]"
     args = [ffmpeg, "-y"]
     for p in parts:
@@ -227,6 +237,20 @@ def concat_encode(runner: Runner, ffmpeg: str, parts: Sequence[Path], out: Path,
     if code != 0 or not out.is_file():
         raise SpliceError("concat_failed", "重编码拼接失败",
                           hint=(err or "").strip().splitlines()[-1][:200] if err else "")
+
+
+def duration_matches(path: Path, ffprobe: str, expected: float,
+                     tolerance: float = 3.0) -> bool:
+    """产物时长和预期对得上吗？
+
+    **exit code 0 不等于产物正确** —— 实测 `-c copy` 拼 25fps + 30fps 时
+    ffmpeg 正常退出，但视频轨时间戳被按 timebase 比例放大 600 倍，
+    显示 20 小时。所以拼完必须验一次时长，不对就回退重编码。
+    """
+    actual = media.probe_duration(ffprobe, path)
+    if actual <= 0:
+        return False
+    return abs(actual - expected) <= max(tolerance, expected * 0.03)
 
 
 # ─────────────────────────── 单个合集 ───────────────────────────
@@ -301,6 +325,19 @@ def splice_collection(project: Project, collection: Collection, *,
     encoder_priority = encode_cfg.get("encoder_priority") or ["libx264"]
     encode_cfg["encoder"] = encoder_priority[0]
 
+    # ── 空间预检：动手前先确认写得下 ──
+    # 实测踩过：D: 剩 0 字节，切到第 5 段才失败，报「ffmpeg 退出码 4294967268」，
+    # 没人看得懂，还白写了 0.5 GB 半成品。宁可一次算清楚。
+    needed = estimate_space(long_video, segments, intro, outro)
+    enough, free = check_space(collection.final, needed)
+    if not enough:
+        msg = (f"磁盘空间不够：拼接需要约 {_gb(needed)}，目标盘只剩 {_gb(free)}。"
+               f"先腾出 {_gb(needed - free)} 再跑。")
+        if log is not None:
+            log.emit("splice", FAIL, name, error="disk_full", message=msg,
+                     needed=needed, free=free)
+        return SpliceResult(name, "fail", error="disk_full", message=msg)
+
     started = time.time()
     if log is not None:
         log.emit("splice", "start", name, long_video=long_video.name,
@@ -314,18 +351,45 @@ def splice_collection(project: Project, collection: Collection, *,
     if mismatch:
         warnings.append(mismatch)
 
+    # ── 帧率一致性：决定能不能走 copy ──
+    # `-c copy` 要求各段时间基一致。实测：正片 30fps(time_base 1/15360)、
+    # 片头片尾 25fps(1/25) —— 拼出来视频时间戳被放大 600 倍，2 分钟变 20 小时，
+    # **而 ffmpeg 退出码是 0**。所以这里先比对，不一致就直接走重编码。
+    source_fps = media.probe_fps(project.ffprobe, long_video)
+    tpl_fps = {
+        media.probe_fps(project.ffprobe, intro),
+        media.probe_fps(project.ffprobe, outro),
+    }
+    fps_mismatch = bool(source_fps) and any(f and abs(f - source_fps) > 0.01 for f in tpl_fps)
+    if fps_mismatch:
+        fps_text = "、".join(f"{f:g}" for f in sorted(tpl_fps) if f)
+        warnings.append(f"帧率不一致（正片 {source_fps:g}fps，片头片尾 {fps_text}fps）"
+                        f"→ 走重编码，否则时间戳会坏")
+
     try:
         for seg in segments:
             seg.output.parent.mkdir(parents=True, exist_ok=True)
             cut_copy(runner, ffmpeg, long_video, seg)
             parts = [intro, seg.temp, outro]
-            used_copy = concat_copy(runner, ffmpeg, parts, seg.output, seg.output.parent)
+            expected = (media.probe_duration(project.ffprobe, intro)
+                        + seg.duration
+                        + media.probe_duration(project.ffprobe, outro))
+            used_copy = False
+            if not fps_mismatch:
+                used_copy = concat_copy(runner, ffmpeg, parts, seg.output, seg.output.parent)
+                # copy 成功不等于产物正确 —— 时长对不上就当作失败
+                if used_copy and not duration_matches(seg.output, project.ffprobe, expected):
+                    warnings.append(f"第 {seg.index} 段 copy 拼接时长不符（预期约 "
+                                    f"{expected:.0f} 秒），已改用重编码")
+                    used_copy = False
+                    try:
+                        seg.output.unlink()
+                    except OSError:
+                        pass
             mode = "copy"
             if not used_copy:
-                # 参数对不上 → 回退重编码（先清掉半成品）
-                if seg.output.exists():
-                    seg.output.unlink()
-                concat_encode(runner, ffmpeg, parts, seg.output, encode_cfg)
+                concat_encode(runner, ffmpeg, parts, seg.output, encode_cfg,
+                              fps=source_fps or None)
                 mode = "encode"
             modes.append(mode)
             outputs.append(seg.output.name)
@@ -334,11 +398,19 @@ def splice_collection(project: Project, collection: Collection, *,
     except SpliceError as exc:
         # ffmpeg 的报错尾行在 hint 里 —— 不记下来就只剩"第 7 段切分失败"，
         # 等于没线索。这一行往往是唯一能看出真正原因的东西。
+        hint = exc.hint or ""
+        if not hint and exc.detail.get("returncode"):
+            hint = _disk_full_hint(int(exc.detail["returncode"]), "")
         if log is not None:
             log.emit("splice", FAIL, name, error=exc.code, message=exc.message,
-                     ffmpeg_hint=exc.hint or None, done=len(outputs))
-        return SpliceResult(name, "fail", error=exc.code, message=exc.message,
-                            outputs=outputs)
+                     ffmpeg_hint=hint or None, done=len(outputs))
+        # 清掉这一轮写的半成品，别把磁盘占着还让人以为有货
+        removed = _discard_partial(collection.final, outputs)
+        message = exc.message
+        if hint:
+            message = f"{message}（{hint}）"
+        return SpliceResult(name, "fail", error=exc.code, message=message,
+                            outputs=outputs, removed=removed)
 
     elapsed = time.time() - started
     mode = "copy" if modes and all(m == "copy" for m in modes) else "encode"
@@ -351,6 +423,30 @@ def splice_collection(project: Project, collection: Collection, *,
                         message=f"{len(outputs)} 个成片（{mode}，{media.hhmmss(elapsed)}）")
 
 
+def _discard_partial(final_dir: Path, outputs: Sequence[str]) -> list[str]:
+    """删掉这一轮写到一半的成片和切片目录。返回删掉的文件名。
+
+    只在**失败**时调用：这些文件是本轮刚写的、不完整的，留着既占空间
+    又容易被误当成品（用户会以为这一集已经拼好了）。
+    """
+    removed: list[str] = []
+    for name in outputs:
+        p = Path(final_dir) / name
+        try:
+            if p.is_file():
+                p.unlink()
+                removed.append(name)
+        except OSError:
+            pass
+    seg_dir = Path(final_dir) / "_segments"
+    try:
+        if seg_dir.is_dir():
+            shutil.rmtree(seg_dir, ignore_errors=True)
+    except OSError:
+        pass
+    return removed
+
+
 def _cleanup_temp(path: Path) -> None:
     """删中间分段文件。删不掉不算错（磁盘权限问题不该让整批失败）。"""
     try:
@@ -358,6 +454,66 @@ def _cleanup_temp(path: Path) -> None:
             path.unlink()
     except OSError:
         pass
+
+
+# ─────────────────────────── 空间预检 ───────────────────────────
+
+#: 预估之外再留的余量（成片索引、文件系统碎片、剪映临时文件）
+SPACE_HEADROOM = 1.15
+
+
+def estimate_space(source: Path, segments: Sequence[Segment],
+                  intro: Path, outro: Path) -> int:
+    """估算这次拼接要写多少字节。
+
+    算法故意保守（宁可估大）：
+    - 切片：`-c copy` 不重编码，总量 ≈ 源文件大小
+    - 成片：每集 = 片头 + 该段 + 片尾，总量 ≈ 源文件 + 集数 ×（片头 + 片尾）
+
+    这两份是**同时存在**的（切片在拼完一集后才删），所以加起来。
+    """
+    try:
+        source_size = source.stat().st_size
+    except OSError:
+        source_size = 0
+    try:
+        tpl_size = intro.stat().st_size + outro.stat().st_size
+    except OSError:
+        tpl_size = 0
+    return int((source_size * 2 + tpl_size * len(segments)) * SPACE_HEADROOM)
+
+
+def check_space(target_dir: Path, needed: int) -> tuple[bool, int]:
+    """检查目标盘剩余空间够不够。
+
+    Returns:
+        (够不够, 剩余字节)
+
+    为什么要预检：实测踩过 —— D: 盘剩 0 字节，`splice` 切到第 5 段才失败，
+    报的是「ffmpeg 退出码 4294967268」（= -28 = ENOSPC），没人看得懂；
+    而且已经白写了 0.5 GB 半成品。
+    """
+    import shutil as _shutil
+
+    probe = Path(target_dir)
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    try:
+        return _shutil.disk_usage(probe).free >= needed, _shutil.disk_usage(probe).free
+    except OSError:
+        return True, 0          # 查不到就别拦着，别因为统计失败把正常流程卡死
+
+
+def _gb(n: int) -> str:
+    return f"{n / 1024 ** 3:.1f} GB"
+
+
+def _disk_full_hint(returncode: int, stderr: str) -> str:
+    """ffmpeg 非零退出时给一句人话 —— 光甩退出码等于没线索。"""
+    # Windows 上 ffmpeg 把 errno 塞进退出码：4294967268 == -28 == ENOSPC
+    if returncode in (-28, 4294967268) or "No space left" in stderr:
+        return "磁盘空间不足（ffmpeg ENOSPC）—— 先腾出空间再跑"
+    return stderr.strip().splitlines()[-1] if stderr.strip() else ""
 
 
 # ─────────────────────────── 批量 ───────────────────────────
