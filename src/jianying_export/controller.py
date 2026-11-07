@@ -330,46 +330,48 @@ class JianyingController:
         except Exception:
             pass
 
-    def _open_export_panel(self, attempts: int = 3, per_try: float = 30.0) -> None:
-        """点「导出」按钮打开面板。点不开就重试，别一次点不中就死等超时。
+    def _enter_draft(self, draft_name: str) -> None:
+        """从首页打开指定草稿并等编辑器就绪。
 
-        面板已经在的话直接返回（上次运行可能把它留在了打开状态）。
+        重试时要**整个重来**（回首页 → 找草稿 → 点开 → 等编辑器），
+        而不是只重点一次导出按钮 —— 只重点的话人还站在首页，那里没有导出按钮。
         """
-        last_error: Optional[Exception] = None
-        for i in range(1, attempts + 1):
-            self._safe_refresh()
-            if self.app_status == "pre_export":
-                return
+        self.get_window()
+        self.switch_to_home()
 
-            btn = self.app.TextControl(
-                searchDepth=2, Compare=ControlFinder.desc_matcher("MainWindowTitleBarExportBtn")
-            )
-            if not self._clickable(btn):
-                last_error = AutomationError("未在编辑窗口中找到导出按钮")
-            else:
-                btn.Click(simulateMove=False)
-                try:
-                    self._wait_export_panel(timeout=per_try)
-                    return
-                except AutomationError as exc:
-                    last_error = exc
-                    if i < attempts:
-                        print(f"导出面板没弹出，复位后重试（第 {i} 次点击失败）")
-                        # 复位：先把可能残留在打开状态的面板关掉、退回首页，
-                        # 再重新点。直接连点效果更差 —— 剪映还停在上一次的状态里。
-                        self.close_export_panel()
-                        try:
-                            self.switch_to_home()
-                        except AutomationError:
-                            pass
-                        time.sleep(2.0)
-            time.sleep(1.0)
-
-        raise AutomationError(
-            f"点了 {attempts} 次「导出」，面板都没弹出来。"
-            f"剪映可能有个对话框挡着（比如「草稿正在使用」），请看一眼手动关掉。\n"
-            f"最后一次错误：{last_error}"
+        draft_name_text = self.app.TextControl(
+            searchDepth=2,
+            Compare=ControlFinder.desc_matcher(f"HomePageDraftTitle:{draft_name}", exact=True)
         )
+        if not draft_name_text.Exists(0):
+            raise exceptions.DraftNotFound(f"未找到名为{draft_name}的剪映草稿")
+        draft_btn = draft_name_text.GetParentControl()
+        if draft_btn is None:
+            raise AutomationError("草稿卡片没有父控件，无法点击")
+        draft_btn.Click(simulateMove=False)
+
+        # 等编辑器渲染完（原实现固定 sleep 60 秒）
+        self._wait_enter_editor()
+
+    def _open_export_panel(self, per_try: float = 30.0) -> None:
+        """点一次「导出」并等面板就绪。点不开就抛，由调用方决定要不要重进草稿。
+
+        面板已经在的话直接返回（上次失败可能把它留在了打开状态）。
+
+        **只做一次**：重试必须在"重新进草稿"那一层做 —— 这里的代码假设人已经
+        站在编辑器里，它没有能力把状态机从首页拉回来。
+        """
+        self._safe_refresh()
+        if self.app_status == "pre_export":
+            return
+
+        btn = self.app.TextControl(
+            searchDepth=2, Compare=ControlFinder.desc_matcher("MainWindowTitleBarExportBtn")
+        )
+        if not self._clickable(btn):
+            raise AutomationError("未在编辑窗口中找到导出按钮")
+        btn.Click(simulateMove=False)
+        self._wait_export_panel(timeout=per_try)
 
     def _wait_export_panel(self, timeout: Optional[float] = None):
         """等导出面板就绪：出现『导出』窗口且 ExportOkBtn 可点"""
@@ -458,30 +460,34 @@ class JianyingController:
             ExportTimeout: 导出完成超时
         """
         print(f"开始导出 {draft_name} 至 {output_path}")
-        self.get_window()
-        self.switch_to_home()
 
-        # ── 1. 打开草稿 ──
-        draft_name_text = self.app.TextControl(
-            searchDepth=2,
-            Compare=ControlFinder.desc_matcher(f"HomePageDraftTitle:{draft_name}", exact=True)
-        )
-        if not draft_name_text.Exists(0):
-            raise exceptions.DraftNotFound(f"未找到名为{draft_name}的剪映草稿")
-        draft_btn = draft_name_text.GetParentControl()
-        if draft_btn is None:
-            raise AutomationError("草稿卡片没有父控件，无法点击")
-        draft_btn.Click(simulateMove=False)
-
-        # 等编辑器渲染完（原实现固定 sleep 60 秒）
-        self._wait_enter_editor()
-
-        # ── 2. 打开导出面板（点不开就重试）──
+        # ── 1+2. 进草稿 → 打开导出面板（点不开就**重新进草稿**再试）──
         #
-        # 实测：剪映有时收到点击但面板不弹（上次运行中途失败会留下怪状态）。
-        # 原实现只点一次然后死等 180 秒 —— 表现就是"鼠标移到导出按钮，然后停住"。
-        # 现在最多点 3 次，每次等 30 秒，点不开再点。
-        self._open_export_panel(attempts=3)
+        # 为什么要重新进草稿：复位时如果只关面板，剪映会回到**首页**，
+        # 而首页根本没有「导出」按钮 —— 重试必然报"未在编辑窗口中找到导出按钮"。
+        # 实测就是这么踩的（合集二 连试 3 次全废）。
+        last_error: Optional[Exception] = None
+        for attempt in range(1, 4):
+            if attempt > 1:
+                print(f"导出面板没打开，重新进草稿再试（第 {attempt} 次）")
+            self._enter_draft(draft_name)
+            try:
+                self._open_export_panel(per_try=45.0)
+                last_error = None
+                break
+            except AutomationError as exc:
+                last_error = exc
+                try:
+                    self.close_export_panel()
+                except Exception:
+                    pass
+                time.sleep(3.0)
+        if last_error is not None:
+            raise AutomationError(
+                f"点了 3 次「导出」，面板都没弹出来。"
+                f"剪映可能有个对话框挡着（比如「草稿正在使用」），请看一眼手动关掉。\n"
+                f"最后一次错误：{last_error}"
+            )
 
         # ── 3. 设导出目录（能设就直接落到目标位置，省掉事后搬 1 GB 文件）──
         target_dir = self._target_dir(output_path) if output_path is not None else None
