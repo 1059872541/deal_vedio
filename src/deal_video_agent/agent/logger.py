@@ -237,13 +237,14 @@ class AgentLogger:
             final_srt_file=final_srt_file,
         )
     
-    def log_api_call(self, call_type: str, call_count: int, model: str = "deepseek-chat"):
-        """记录API调用"""
+    def log_api_call(self, call_type: str, call_count: int, model: str = ""):
+        """记录API调用。`model` 由调用方传入实际用的模型名 —— 别在这里硬编码，
+        模型名会变，写死会让日志骗人。"""
         self._logger.info(
             "api_call",
             call_type=call_type,
             call_count=call_count,
-            model=model,
+            model=model or "?",
         )
     
     def log_result(self, status: str, message: str, api_calls: int):

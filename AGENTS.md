@@ -103,6 +103,29 @@ workspace:
 
 > `conf/本机.yaml` 不进 git。换电脑就重走一遍 §1。
 
+### 1.5 回填 `conf/agent.yaml`（字幕涉及才需要）
+
+要跑 `vedio subtitle` 才需要它。模板是 `conf/agent.example.yaml`：
+
+```yaml
+deepseek:
+  api_key: "sk-..."
+  model: "deepseek-flash"
+  max_tokens: 32768
+```
+
+三个用途（构建知识库 / 字幕纠错 / 标题生成）**共用一个模型**。
+模型名放这里而不是代码里，是因为它会随厂商更新而变；改名只改这一行。
+
+**`max_tokens` 给少了会静默失败**，这是实际踩过的坑：
+推理模型先输出 `reasoning_content`（内部推理），再输出 `content`（正文）。
+额度被推理吃光时 `content` 是空的、`finish_reason=length` ——
+表现是"跑了两分钟，什么都没改"。实测 329 行字幕在 8192 下必死，32768 才够。
+
+> 两个坑要记住：
+> ① 模型名有效 ≠ 能用。先拿 10 行字幕试，别拿整批试。
+> ② 只用环境变量 `DEEPSEEK_MODEL` 临时换模型可以，但 `max_tokens` 要跟着调。
+
 ---
 
 ## §2 日常交互

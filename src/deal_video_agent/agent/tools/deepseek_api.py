@@ -15,6 +15,48 @@ ENV_KEY = "deepseek_env_key"
 #: conf/本机.example.yaml 里写过的 —— 两者长期不一致，这里都认。
 ENV_KEYS = ("deepseek_env_key", "DEEPSEEK_API_KEY", "DEEPSEEK_KEY")
 
+#: 覆盖模型名的环境变量
+ENV_MODEL = "DEEPSEEK_MODEL"
+
+#: 兜底默认值。**真正以 conf/agent.yaml 为准**，这里只在配置缺失时起作用。
+DEFAULTS = {
+    "api_key": "",
+    "model": "deepseek-flash",
+    "base_url": "https://api.deepseek.com",
+    "max_tokens": 8192,
+}
+
+
+def _settings() -> dict:
+    """读 agent 配置（`conf/agent.yaml`）。读不到就返回默认值，绝不抛异常。
+
+    优先走 `vedio.context.AgentConfig`（目录约定只有它一份实现）；
+    旧脚本单独运行时 sys.path 里可能没有 src，import 会失败 —— 那时直接读 yaml 兜底。
+    """
+    try:
+        from vedio.context import AgentConfig
+        cfg = AgentConfig.load()
+        return {"api_key": cfg.api_key, "model": cfg.model,
+                "base_url": cfg.base_url, "max_tokens": cfg.max_tokens}
+    except Exception:          # noqa: BLE001
+        pass
+
+    try:
+        import yaml
+        path = Path(__file__).resolve().parents[4] / "conf" / "agent.yaml"
+        if path.is_file():
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            section = data.get("deepseek") or {}
+            merged = dict(DEFAULTS)
+            for key in DEFAULTS:
+                if section.get(key):
+                    merged[key] = section[key]
+            return merged
+    except Exception:          # noqa: BLE001
+        pass
+
+    return dict(DEFAULTS)
+
 
 def _candidate_env_names(env_key: Optional[str]) -> list[str]:
     names: list[str] = []
@@ -27,67 +69,62 @@ def _candidate_env_names(env_key: Optional[str]) -> list[str]:
 def load_api_key(env_key: Optional[str] = None) -> str:
     """按优先级取 API key，取不到就抛一条人话错误。
 
-    1. 环境变量（老办法；三个常见名字都认）
-    2. `conf/本机.yaml` 的 `api.deepseek_key`（推荐 —— 这个文件 gitignored，
-       本来就是放"每台机器不一样"的东西；而且环境变量在进程启动后就改不了了，
-       实测 DSH 这类常驻进程会读不到后来用 setx 设的变量）
+    1. 环境变量（三个常见名字都认）
+    2. `conf/agent.yaml` 的 `deepseek.api_key`
 
-    两条都没有时，错误信息要说清"该填哪、填哪儿"，而不是甩一个变量名让人猜。
+    环境变量优先，是为了让 CI/临时覆盖不必写文件；日常就填 agent.yaml。
     """
     for name in _candidate_env_names(env_key):
         value = (os.environ.get(name) or "").strip()
         if value:
             return value
 
-    value = _key_from_local_config()
+    value = (_settings().get("api_key") or "").strip()
     if value:
         return value
 
     raise ValueError(
         "没有找到 DeepSeek API key。两种填法（任选一种，推荐 ①）：\n"
-        "  ① conf/本机.yaml 里加（这个文件不进 git）：\n"
-        "       api:\n"
-        "         deepseek_key: sk-...\n"
+        "  ① conf/agent.yaml 里填（这个文件不进 git）：\n"
+        "       deepseek:\n"
+        "         api_key: sk-...\n"
         "  ② 系统环境变量（设完要重开终端 / 重启程序）：\n"
         "       setx deepseek_env_key sk-...\n"
         "     （DEEPSEEK_API_KEY / DEEPSEEK_KEY 也认）"
     )
 
 
-def _key_from_local_config() -> str:
-    """从 conf/本机.yaml 读 key。读不到就返回空串（不抛异常）。"""
-    # 首选 vedio.context —— 目录约定只有它一份实现
-    try:
-        from vedio.context import LocalConfig
-        key = LocalConfig.load().deepseek_key
-        if key:
-            return key
-    except Exception:          # noqa: BLE001 - 缺配置 / 结构不对都不该炸在这里
-        pass
+def load_model() -> str:
+    """当前该用的模型名。
 
-    # 兜底：直接读。旧脚本单独跑时 sys.path 里可能没有 src，import 会失败
-    try:
-        import yaml
-        path = Path(__file__).resolve().parents[4] / "conf" / "本机.yaml"
-        if path.is_file():
-            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            return str((data.get("api") or {}).get("deepseek_key") or "").strip()
-    except Exception:          # noqa: BLE001
-        pass
-    return ""
+    优先级：环境变量 DEEPSEEK_MODEL > conf/agent.yaml 的 deepseek.model > 兜底值。
+
+    模型名不写死在调用点，是因为它会随厂商更新而变（deepseek-chat →
+    deepseek-v4-pro → deepseek-flash → …）。写死意味着每次改名都要改代码。
+    """
+    value = (os.environ.get(ENV_MODEL) or "").strip()
+    if value:
+        return value
+    return str(_settings().get("model") or DEFAULTS["model"]).strip() or DEFAULTS["model"]
 
 
 class DeepSeekClient:
-    """DeepSeek API 调用客户端"""
+    """DeepSeek API 调用客户端。
+
+    三个用途（构建知识库 / 字幕纠错 / 标题生成）**共用同一个模型** ——
+    由 `conf/agent.yaml` 的 `deepseek.model` 决定。
+    """
 
     def __init__(self, env_key: Optional[str] = None):
+        settings = _settings()
         api_key = load_api_key(env_key)
 
         self.client = OpenAI(
             api_key=api_key,
-            base_url="https://api.deepseek.com"
+            base_url=str(settings.get("base_url") or DEFAULTS["base_url"]),
         )
-        self.default_model = "deepseek-v4-pro"
+        self.default_model = load_model()
+        self.max_tokens = int(settings.get("max_tokens") or DEFAULTS["max_tokens"])
 
     def _extract_usage(self, chunk) -> dict:
         """从流式响应 chunk 中提取 usage 数据"""
@@ -106,7 +143,7 @@ class DeepSeekClient:
         system_prompt: str,
         user_prompt: str,
         model: Optional[str] = None,
-        max_tokens: int = 8192
+        max_tokens: Optional[int] = None
     ) -> tuple[str, dict]:
         """
         调用 DeepSeek API 进行对话（非流式）
@@ -122,7 +159,7 @@ class DeepSeekClient:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            max_tokens=max_tokens
+            max_tokens=max_tokens or self.max_tokens
         )
 
         content = response.choices[0].message.content or ""
@@ -143,7 +180,7 @@ class DeepSeekClient:
         system_prompt: str,
         user_prompt: str,
         model: Optional[str] = None,
-        max_tokens: int = 8192,
+        max_tokens: Optional[int] = None,
         on_chunk: Optional[Callable[[str], None]] = None
     ) -> tuple[str, dict]:
         """
@@ -163,7 +200,7 @@ class DeepSeekClient:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            max_tokens=max_tokens,
+            max_tokens=max_tokens or self.max_tokens,
             stream=True,
             stream_options={"include_usage": True}
         )
@@ -195,7 +232,7 @@ class DeepSeekClient:
         system_prompt: str,
         user_prompt: str,
         model: Optional[str] = None,
-        max_tokens: int = 8192,
+        max_tokens: Optional[int] = None,
         show_progress: bool = True
     ) -> tuple[str, dict]:
         """

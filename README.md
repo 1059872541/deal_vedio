@@ -40,6 +40,26 @@
 | `vedio series` | 给一组合集定「篇名 + 上下篇」（`rename` 前置） |
 | `vedio logs` | 看批次日志（列文件 + 打印最新那个的末尾） |
 
+### 配置分两个文件
+
+| 文件 | 放什么 | 入库 |
+|---|---|---|
+| `conf/本机.yaml` | 这台机器有什么：工作区路径、ffmpeg 在哪、剪映草稿目录 | ❌ |
+| `conf/agent.yaml` | 用哪个账号、哪个模型：DeepSeek key + 模型名 + token 上限 | ❌ |
+
+`agent.yaml` 单独拆出来，是因为**模型名会随厂商更新而变**（deepseek-chat →
+deepseek-v4-pro → deepseek-flash）。改名只改这个文件，不动代码。
+
+```yaml
+deepseek:
+  api_key: "sk-..."
+  model: "deepseek-flash"
+  max_tokens: 32768      # 给推理留够额度，小了会"跑完什么都没改"
+```
+
+模板见 `conf/agent.example.yaml`。环境变量 `deepseek_env_key` / `DEEPSEEK_MODEL`
+可以临时覆盖。
+
 ```powershell
 vedio status --game 我的世界 --batch 2026-12
 vedio series --game 我的世界 --batch 2026-12 --groups "合集一,合集二=收集强力变身"

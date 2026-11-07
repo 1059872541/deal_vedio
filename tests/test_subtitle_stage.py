@@ -252,6 +252,33 @@ class TestCorrect(SubCase):
         self.assertFalse((SUB.__file__ and
                           Path(SUB.__file__).resolve().parents[2] / "logs" / "agent-x.jsonl").exists())
 
+    def test_token_usage_recorded(self):
+        """经 vedio 调用时 agent 的性能报告不打印，用量得自己捞出来记进事件"""
+        self.write_txt()
+
+        def runner_with_usage(target_dir, prompt):
+            (Path(target_dir) / "corrected.txt").write_text("1:x\n", encoding="utf-8")
+            return {"api_details": [
+                {"node": "correct_subtitle",
+                 "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}},
+                {"node": "generate_title",
+                 "usage": {"prompt_tokens": 20, "completion_tokens": 30, "total_tokens": 50}},
+            ]}
+
+        with mock.patch.object(SUB, "read_agent_titles", return_value=None):
+            r = SUB.correct(self.p, self.c, log=self.log, runner=runner_with_usage)
+        self.assertEqual(r.detail["tokens"], {"prompt": 120, "completion": 80, "total": 200})
+        self.assertIn("200 tokens", r.message)
+        event = self.log.last(verb="subtitle:correct", event="done")
+        self.assertEqual(event.fields["tokens"]["total"], 200)
+
+    def test_no_usage_means_no_token_field(self):
+        self.write_txt()
+        with mock.patch.object(SUB, "read_agent_titles", return_value=None):
+            r = SUB.correct(self.p, self.c, log=self.log, runner=self.fake_runner())
+        self.assertNotIn("tokens", r.detail)
+        self.assertNotIn("tokens", self.log.last(verb="subtitle:correct", event="done").fields)
+
     def test_runner_failure(self):
         self.write_txt()
 

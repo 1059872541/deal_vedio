@@ -147,6 +147,27 @@ def _point_legacy_logger(log_dir: Path) -> None:
         pass
 
 
+def _token_usage(agent_result) -> dict:
+    """从 agent 返回里汇总 token 消耗。
+
+    经 `vedio` 调用时，agent 的性能报告不会打印（那条只在直接跑
+    `subtitle_agent.py` 时才走），所以这里把用量捞出来记进事件 ——
+    不然"这次花了多少"没人知道。
+    """
+    if not isinstance(agent_result, dict):
+        return {}
+    total = {"prompt": 0, "completion": 0, "total": 0}
+    for item in (agent_result.get("api_details") or []):
+        usage = (item or {}).get("usage") or {}
+        for raw, key in (("prompt_tokens", "prompt"),
+                         ("completion_tokens", "completion"),
+                         ("total_tokens", "total")):
+            value = usage.get(raw)
+            if isinstance(value, (int, float)):
+                total[key] += int(value)
+    return total if total["total"] else {}
+
+
 def correct(project: Project, collection: Collection, *, log: Optional[EventLog] = None,
             runner: Optional[Runner] = None, prompt: Optional[str] = None,
             force: bool = False, titles_writer: Optional[Callable[[list[str]], None]] = None
@@ -226,15 +247,23 @@ def correct(project: Project, collection: Collection, *, log: Optional[EventLog]
                 log.emit("subtitle:titles", FAIL, name, error=type(exc).__name__,
                          message=str(exc))
 
+    tokens = _token_usage(agent_result)
     if log is not None:
         log.emit("subtitle:correct", DONE, name, file=produced.name,
                  titles=len(titles) if titles else 0, titles_written=wrote_titles,
-                 log_file=log_file.name if log_file else None)
+                 log_file=log_file.name if log_file else None,
+                 **({"tokens": tokens} if tokens else {}))
+    detail = {"titles": len(titles) if titles else 0,
+              "titles_written": wrote_titles,
+              "log_file": log_file.name if log_file else None}
+    if tokens:
+        detail["tokens"] = tokens
+    message = f"{produced.name}（标题 {len(titles) if titles else 0} 条"
+    if tokens:
+        message += f"，{tokens['total']} tokens"
+    message += "）"
     return SubtitleResult(name, "correct", "done", outputs=[produced.name],
-                          detail={"titles": len(titles) if titles else 0,
-                                  "titles_written": wrote_titles,
-                                  "log_file": log_file.name if log_file else None},
-                          message=f"{produced.name}（标题 {len(titles) if titles else 0} 条）")
+                          detail=detail, message=message)
 
 
 def _make_titles_writer(project: Project, collection_name: str) -> Callable[[list[str]], None]:

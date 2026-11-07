@@ -21,11 +21,16 @@ from .tools import (
 from .logger import get_logger, reset_logger
 
 
-#: 字幕纠错专用的模型。
-#: `deepseek-v4-pro` 是推理模型，在这条"只输出 数字:内容"的提示词上会把
-#: 全部 token 额度花在推理里、正文一个字都不吐（实测 8192 和 32768 都烧光，
-#: finish_reason=length、content 为空）。纠错是确定性任务，用非推理模型足够。
-CORRECTION_MODEL = "deepseek-chat"
+#: 模型名不再写在这里。
+#: 三个用途（构建知识库 / 字幕纠错 / 标题生成）共用 `conf/agent.yaml` 的
+#: `deepseek.model`，由 `DeepSeekClient.default_model` 提供；调用时不传 `model=`
+#: 就用它。之所以搬走：模型名会随厂商更新（deepseek-chat → deepseek-v4-pro
+#: → deepseek-flash → …），写死在调用点等于每次改名都要改代码。
+#:
+#: ⚠ 有一件事不能靠配置忘掉：**纠错这一环不能用推理模型**。
+#:   实测推理模型会把额度全烧在推理里、正文一个字都不吐
+#:   （finish_reason=length、content 为空），结果是"跑完了但什么都没改"。
+#:   换模型后如果 corrected.txt 变成 0 字节，先怀疑这一条。
 
 # ==================== 日志记录器 ====================
 
@@ -329,7 +334,8 @@ def build_knowledge_base(state: SubtitleAgentState) -> SubtitleAgentState:
         knowledge_file = kb_manager.save_main_topic_kb(clean_name, main_topic, response)
 
         # 记录API调用
-        logger.log_api_call(call_type="build_knowledge_base", call_count=1)
+        logger.log_api_call(call_type="build_knowledge_base", call_count=1,
+                             model=deepseek.default_model)
         state.api_details.append({
             "node": "build_knowledge_base",
             "usage": usage
@@ -447,7 +453,6 @@ def correct_subtitle(state: SubtitleAgentState) -> SubtitleAgentState:
         response, usage = deepseek.stream_chat_with_progress(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            model=CORRECTION_MODEL,
             show_progress=True
         )
 
@@ -455,8 +460,10 @@ def correct_subtitle(state: SubtitleAgentState) -> SubtitleAgentState:
         # 否则会写出 0 字节 corrected.txt 却报告"纠正完成"。
         if usage.get("finish_reason") == "length":
             state.status = "error"
-            state.message = (f"字幕纠正输出被截断（completion_tokens="
-                             f"{usage.get('completion_tokens')}），结果不可用")
+            state.message = (
+                f"字幕纠正输出被截断（completion_tokens={usage.get('completion_tokens')}），"
+                f"结果不可用。多半是推理把额度吃光了 —— 调大 conf/agent.yaml 的 max_tokens"
+            )
             logger.log_error("correct_subtitle", state.message)
             return state
 
@@ -520,7 +527,8 @@ def correct_subtitle(state: SubtitleAgentState) -> SubtitleAgentState:
             corrected_file=str(corrected_file),
             correction_count=correction_count
         )
-        logger.log_api_call(call_type="correct_subtitle", call_count=1)
+        logger.log_api_call(call_type="correct_subtitle", call_count=1,
+                             model=deepseek.default_model)
         state.api_details.append({
             "node": "correct_subtitle",
             "usage": usage
@@ -603,19 +611,22 @@ def generate_title(state: SubtitleAgentState) -> SubtitleAgentState:
             show_progress=True
         )
 
-        # 推理模型偶尔会把额度全烧在推理里、正文为空。退回非推理模型重试一次，
+        # 偶尔会返回空内容。用同一个模型重试一次 ——
         # 否则「0 条标题」会被当成"生成完成"，标题却再也没人重写。
+        #
+        # 注意：以前这里是"从推理模型退回非推理模型再试"，那是两套模型时代的
+        # 兜底。现在三次调用共用一个模型（conf/agent.yaml），所以这只是
+        # 一次普通重试；如果空内容持续出现，说明该换模型了，不是该重试。
         if not response.strip():
-            print("[WARNING] 标题生成返回空内容，用非推理模型重试")
+            print("[WARNING] 标题生成返回空内容，重试一次")
             response, usage = deepseek.stream_chat_with_progress(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
-                model=CORRECTION_MODEL,
                 show_progress=True
             )
             if not response.strip():
                 state.status = "error"
-                state.message = "标题生成返回空内容（两个模型都没输出）"
+                state.message = "标题生成返回空内容（重试一次仍为空，检查 conf/agent.yaml 的模型）"
                 logger.log_error("generate_title", state.message)
                 return state
 
@@ -646,7 +657,8 @@ def generate_title(state: SubtitleAgentState) -> SubtitleAgentState:
             titles_count=len(valid_titles),
             duplicate_count=duplicate_count
         )
-        logger.log_api_call(call_type="generate_title", call_count=1)
+        logger.log_api_call(call_type="generate_title", call_count=1,
+                             model=deepseek.default_model)
         state.api_details.append({
             "node": "generate_title",
             "usage": usage

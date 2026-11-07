@@ -49,18 +49,8 @@ jianying:
   window_title: "剪映专业版"
 
 
-# ── DeepSeek API（字幕纠正用）──
-# 两种填法，任选一种。**推荐 ①**：不用动系统设置，换机器只改这一个文件。
-#
-# ① 直接写在这里（本文件不进 git，不会泄露）
-#      api:
-#        deepseek_key: "sk-..."
-#
-# ② 用系统环境变量（设完必须重开终端；常驻进程如 DSH 需要重启才读得到）
-#      setx deepseek_env_key "sk-..."
-#    程序依次找：deepseek_env_key → DEEPSEEK_API_KEY → DEEPSEEK_KEY
-#
-# 注：以前这里只写了 env_key 名字，而代码读的是另一个名字 —— 对不上，
-#     所以"照文档配了却报找不到 key"。现在两个地方都能配，也都认旧名字。
-api:
-  deepseek_key: ""
+# ── DeepSeek API ──
+# 不在这里。key 和模型名在 conf/agent.yaml（模板：agent.example.yaml）。
+# 分开的原因：本文件放"这台机器有什么"（路径、工具），
+# agent.yaml 放"用哪个账号、哪个模型"—— 后者会随厂商更新而变。
+

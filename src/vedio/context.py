@@ -126,8 +126,6 @@ class LocalConfig:
     ffmpeg: str = "ffmpeg"
     ffprobe: str = "ffprobe"
     window_title: str = "剪映专业版"
-    #: DeepSeek API key。环境变量 `deepseek_env_key` 优先，这里只作兜底
-    deepseek_key: str = ""
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "LocalConfig":
@@ -150,7 +148,6 @@ class LocalConfig:
             )
         jy = data.get("jianying") or {}
         tool = data.get("tool") or {}
-        api = data.get("api") or {}
         draft = (jy.get("draft_dir") or "").strip()
         return cls(
             workspace_root=Path(ws),
@@ -158,7 +155,70 @@ class LocalConfig:
             ffmpeg=str(tool.get("ffmpeg") or "ffmpeg"),
             ffprobe=str(tool.get("ffprobe") or "ffprobe"),
             window_title=str(jy.get("window_title") or "剪映专业版"),
-            deepseek_key=str(api.get("deepseek_key") or "").strip(),
+        )
+
+
+# ─────────────────────────── agent 配置 ───────────────────────────
+
+#: agent 配置文件名（在 conf/ 下）
+AGENT_CONFIG_FILE = "agent.yaml"
+
+#: 模型名兜底值。正常以 `conf/agent.yaml` 为准 —— 写在这里只是为了让
+#: "配置文件不存在"也能跑起来，不是给业务用的常量。
+DEFAULT_MODEL = "deepseek-flash"
+
+
+@dataclass(frozen=True)
+class AgentConfig:
+    """字幕 agent 的模型与密钥，来自 ``conf/agent.yaml``（gitignored）。
+
+    为什么单独一个文件，不并进 `本机.yaml`：
+
+        `本机.yaml`  = 这台机器有什么（工作区路径、ffmpeg 在哪）
+        `agent.yaml` = 用哪个账号、哪个模型
+
+    后者会随厂商更新而变（模型名一年能换三次），而且换账号时只改这一处。
+    混在一起的话，每次换模型都要动路径配置，容易改错。
+    """
+
+    api_key: str = ""
+    model: str = DEFAULT_MODEL
+    base_url: str = "https://api.deepseek.com"
+    max_tokens: int = 8192
+
+    @classmethod
+    def load(cls, path: str | Path | None = None) -> "AgentConfig":
+        """读配置。
+
+        文件不存在**不报错** —— 只靠环境变量也能跑，这时用默认值。
+        文件存在但内容坏了才报错，免得以为是"没配置"。
+        """
+        p = Path(path) if path else _repo_root() / "conf" / AGENT_CONFIG_FILE
+        if not p.is_file():
+            return cls()
+        data = _read_yaml(p) or {}
+        return cls.from_dict(data, source=str(p))
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any], source: str = "<dict>") -> "AgentConfig":
+        section = data.get("deepseek") or {}
+        if not isinstance(section, dict):
+            raise LocalConfigError(f"{source} 的 deepseek 段不是一个字典")
+
+        max_tokens = section.get("max_tokens", 8192)
+        try:
+            max_tokens = int(max_tokens)
+        except (TypeError, ValueError):
+            raise LocalConfigError(f"{source} 的 deepseek.max_tokens 不是整数：{max_tokens!r}")
+        if max_tokens <= 0:
+            max_tokens = 8192
+
+        return cls(
+            api_key=str(section.get("api_key") or "").strip(),
+            model=str(section.get("model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL,
+            base_url=str(section.get("base_url") or "https://api.deepseek.com").strip()
+                     or "https://api.deepseek.com",
+            max_tokens=max_tokens,
         )
 
 

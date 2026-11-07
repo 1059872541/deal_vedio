@@ -190,6 +190,28 @@ NODE_ALIASES = {
 
 API_NODES = {"correct_subtitle", "generate_title", "build_knowledge_base"}
 
+#: 每百万 token 的人民币单价：(缓存命中输入, 缓存未命中输入, 输出)。
+#:
+#: **故意留空**。原因：模型换了之后原来那套价目（reasoner 输入 ¥4 / 输出 ¥16）
+#: 已经不适用；而我没有权威单价，编一个比不显示更糟 —— 会让人以为知道花了多少。
+#: 想恢复成本估算，把当前模型的单价填进来即可，例如：
+#:
+#:     MODEL_PRICES = {
+#:         "deepseek-flash": (0.1, 0.5, 2.0),   # ← 用官方价目核实后替换
+#:     }
+#:
+#: 查不到时只报 token 数，不算钱。
+MODEL_PRICES: Dict[str, tuple] = {}
+
+
+def _current_model() -> str:
+    """当前配置的模型名（从 conf/agent.yaml 读，不建客户端、不花 token）"""
+    try:
+        from .tools.deepseek_api import load_model
+        return load_model()
+    except Exception:          # noqa: BLE001
+        return "unknown"
+
 
 def _print_performance(node_timings: dict, api_details: list):
     """打印性能报告"""
@@ -231,19 +253,24 @@ def _print_performance(node_timings: dict, api_details: list):
             hit_rate = hit / (hit + miss) * 100 if (hit + miss) > 0 else 0
             print(f"  {alias}: prompt={pt}, completion={ct}, 缓存命中={hit_rate:.0f}%")
 
+        # 成本估算按模型名查表。查不到就**只报 token 数、不算钱** ——
+        # 编一个单价出来比不算更糟：会让人以为知道成本。
         total_tok = total_prompt + total_completion
         cache_rate = total_hit / (total_hit + total_miss) * 100 if (total_hit + total_miss) > 0 else 0
-
-        # 成本估算（DeepSeek-reasoner：输入 ~¥4/1M，输出 ~¥16/1M，缓存命中约 1/10）
-        miss_cost_cny = total_miss * 4.0 / 1_000_000
-        hit_cost_cny = total_hit * 0.4 / 1_000_000  # 缓存命中约 1/10 价格
-        completion_cost_cny = total_completion * 16.0 / 1_000_000
-        total_cost_cny = miss_cost_cny + hit_cost_cny + completion_cost_cny
 
         print(f"  {'─' * 40}")
         print(f"  总计: {total_tok} tokens | prompt {total_prompt} | completion {total_completion}")
         print(f"  缓存命中: {total_hit}/{total_hit + total_miss} = {cache_rate:.0f}%")
-        print(f"  预估成本: ~¥{total_cost_cny:.4f}（基于 DeepSeek 官方 RMB 定价）")
+
+        price = MODEL_PRICES.get(_current_model())
+        if price is None:
+            print(f"  预估成本: 未配置 {_current_model()} 的单价，跳过（见 MODEL_PRICES）")
+        else:
+            hit_price, miss_price, out_price = price
+            cost = (total_hit * hit_price + total_miss * miss_price
+                    + total_completion * out_price) / 1_000_000
+            print(f"  预估成本: ~¥{cost:.4f}（{_current_model()}，输入¥{miss_price}/1M，"
+                  f"输出¥{out_price}/1M）")
     
     print("=" * 50)
 
