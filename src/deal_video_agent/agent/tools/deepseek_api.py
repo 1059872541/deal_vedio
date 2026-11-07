@@ -3,17 +3,85 @@
 DeepSeek API 客户端
 """
 import os
+from pathlib import Path
 from typing import Optional, Callable
 from openai import OpenAI
+
+#: 环境变量名（历史约定，保留兼容）
+ENV_KEY = "deepseek_env_key"
+
+#: 依次尝试的环境变量名。
+#: `deepseek_env_key` 是代码里一直在用的；`DEEPSEEK_API_KEY` 是
+#: conf/本机.example.yaml 里写过的 —— 两者长期不一致，这里都认。
+ENV_KEYS = ("deepseek_env_key", "DEEPSEEK_API_KEY", "DEEPSEEK_KEY")
+
+
+def _candidate_env_names(env_key: Optional[str]) -> list[str]:
+    names: list[str] = []
+    for name in (env_key, *ENV_KEYS):
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def load_api_key(env_key: Optional[str] = None) -> str:
+    """按优先级取 API key，取不到就抛一条人话错误。
+
+    1. 环境变量（老办法；三个常见名字都认）
+    2. `conf/本机.yaml` 的 `api.deepseek_key`（推荐 —— 这个文件 gitignored，
+       本来就是放"每台机器不一样"的东西；而且环境变量在进程启动后就改不了了，
+       实测 DSH 这类常驻进程会读不到后来用 setx 设的变量）
+
+    两条都没有时，错误信息要说清"该填哪、填哪儿"，而不是甩一个变量名让人猜。
+    """
+    for name in _candidate_env_names(env_key):
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return value
+
+    value = _key_from_local_config()
+    if value:
+        return value
+
+    raise ValueError(
+        "没有找到 DeepSeek API key。两种填法（任选一种，推荐 ①）：\n"
+        "  ① conf/本机.yaml 里加（这个文件不进 git）：\n"
+        "       api:\n"
+        "         deepseek_key: sk-...\n"
+        "  ② 系统环境变量（设完要重开终端 / 重启程序）：\n"
+        "       setx deepseek_env_key sk-...\n"
+        "     （DEEPSEEK_API_KEY / DEEPSEEK_KEY 也认）"
+    )
+
+
+def _key_from_local_config() -> str:
+    """从 conf/本机.yaml 读 key。读不到就返回空串（不抛异常）。"""
+    # 首选 vedio.context —— 目录约定只有它一份实现
+    try:
+        from vedio.context import LocalConfig
+        key = LocalConfig.load().deepseek_key
+        if key:
+            return key
+    except Exception:          # noqa: BLE001 - 缺配置 / 结构不对都不该炸在这里
+        pass
+
+    # 兜底：直接读。旧脚本单独跑时 sys.path 里可能没有 src，import 会失败
+    try:
+        import yaml
+        path = Path(__file__).resolve().parents[4] / "conf" / "本机.yaml"
+        if path.is_file():
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            return str((data.get("api") or {}).get("deepseek_key") or "").strip()
+    except Exception:          # noqa: BLE001
+        pass
+    return ""
 
 
 class DeepSeekClient:
     """DeepSeek API 调用客户端"""
 
-    def __init__(self, env_key: str = "deepseek_env_key"):
-        api_key = os.environ.get(env_key)
-        if not api_key:
-            raise ValueError(f"未找到环境变量: {env_key}")
+    def __init__(self, env_key: Optional[str] = None):
+        api_key = load_api_key(env_key)
 
         self.client = OpenAI(
             api_key=api_key,

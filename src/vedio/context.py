@@ -126,6 +126,8 @@ class LocalConfig:
     ffmpeg: str = "ffmpeg"
     ffprobe: str = "ffprobe"
     window_title: str = "剪映专业版"
+    #: DeepSeek API key。环境变量 `deepseek_env_key` 优先，这里只作兜底
+    deepseek_key: str = ""
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "LocalConfig":
@@ -148,6 +150,7 @@ class LocalConfig:
             )
         jy = data.get("jianying") or {}
         tool = data.get("tool") or {}
+        api = data.get("api") or {}
         draft = (jy.get("draft_dir") or "").strip()
         return cls(
             workspace_root=Path(ws),
@@ -155,6 +158,7 @@ class LocalConfig:
             ffmpeg=str(tool.get("ffmpeg") or "ffmpeg"),
             ffprobe=str(tool.get("ffprobe") or "ffprobe"),
             window_title=str(jy.get("window_title") or "剪映专业版"),
+            deepseek_key=str(api.get("deepseek_key") or "").strip(),
         )
 
 
