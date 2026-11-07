@@ -78,15 +78,23 @@ def build(tmp: Path, with_templates=True) -> None:
 class FakeFfmpeg:
     """按命令参数造出输出文件；可指定某类命令失败"""
 
-    def __init__(self, fail_concat_copy=False, fail_cut=False):
+    def __init__(self, fail_concat_copy=False, fail_cut=False, fail_normalize=False):
         self.calls = []
         self.fail_concat_copy = fail_concat_copy
         self.fail_cut = fail_cut
+        self.fail_normalize = fail_normalize
 
     def __call__(self, args, timeout):
         args = list(args)
         self.calls.append(args)
         out = Path(args[-1])
+        if "-vf" in args and any(str(a).startswith("fps=") for a in args):
+            # 片头片尾帧率转换
+            if self.fail_normalize:
+                return 1, "encoder not found"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"normalized")
+            return 0, ""
         if "-f" in args and "concat" in args and "copy" in args:
             if self.fail_concat_copy:
                 return 1, "Non-monotonous DTS"
@@ -109,7 +117,9 @@ class FakeFfmpeg:
         """把调用归类，方便断言"""
         out = []
         for args in self.calls:
-            if "-filter_complex" in args:
+            if "-vf" in args and any(str(a).startswith("fps=") for a in args):
+                out.append("normalize")
+            elif "-filter_complex" in args:
                 out.append("encode")
             elif "-f" in args and "concat" in args:
                 out.append("copy")
@@ -244,14 +254,16 @@ class TestSpliceDiskPreflight(SpliceCase):
 
 
 class TestFrameRateMismatch(SpliceCase):
-    """帧率不一致时不能走 `-c copy`。
+    """帧率不一致：先把片头片尾转成同帧率缓存，之后仍走 copy。
 
     实测：正片 30fps(time_base 1/15360) + 片头片尾 25fps(1/25)，
-    copy 拼接后**视频时间戳被放大 600 倍**（2 分钟显示 20 小时），
-    而 ffmpeg 退出码是 0 —— 光看返回值根本发现不了。
+    copy 拼接会把视频时间戳放大 600 倍（2 分钟显示 20 小时），而退出码是 0。
+    但直接全程重编码又慢 14 倍（80 秒/集，21 分钟素材要 29 分钟）。
+
+    所以正解是：片头片尾转一次、缓存，然后继续 copy。
     """
 
-    def test_mismatch_forces_encode(self):
+    def test_mismatch_normalizes_then_copy(self):
         self.touch_long()
         fake = FakeFfmpeg()
         fps_map = {"长片.mp4": 30.0, "intro.mp4": 25.0, "outro.mp4": 25.0}
@@ -261,13 +273,38 @@ class TestFrameRateMismatch(SpliceCase):
         ):
             result = SP.splice_collection(self.p, self.c, log=self.log, runner=fake)
         self.assertEqual(result.status, "done")
+        self.assertEqual(result.mode, "copy")
+        kinds = fake.kinds()
+        self.assertEqual(kinds.count("normalize"), 2)      # 片头 + 片尾
+        self.assertNotIn("encode", kinds)
+
+    def test_normalization_is_cached(self):
+        """第二次拼接不该再转一遍"""
+        self.touch_long()
+        fps_map = {"长片.mp4": 30.0, "intro.mp4": 25.0, "outro.mp4": 25.0}
+        with mock.patch.object(
+            media, "probe_fps",
+            side_effect=lambda ff, p, **kw: fps_map.get(Path(p).name, 30.0),
+        ):
+            first = FakeFfmpeg()
+            SP.splice_collection(self.p, self.c, log=self.log, runner=first, force=True)
+            second = FakeFfmpeg()
+            SP.splice_collection(self.p, self.c, log=self.log, runner=second, force=True)
+        self.assertEqual(first.kinds().count("normalize"), 2)
+        self.assertEqual(second.kinds().count("normalize"), 0)
+
+    def test_normalization_failure_falls_back_to_encode(self):
+        """转换失败就只能重编码 —— 宁可慢，不能拼坏"""
+        self.touch_long()
+        fake = FakeFfmpeg(fail_normalize=True)
+        fps_map = {"长片.mp4": 30.0, "intro.mp4": 25.0, "outro.mp4": 25.0}
+        with mock.patch.object(
+            media, "probe_fps",
+            side_effect=lambda ff, p, **kw: fps_map.get(Path(p).name, 30.0),
+        ):
+            result = SP.splice_collection(self.p, self.c, log=self.log, runner=fake)
+        self.assertEqual(result.status, "done")
         self.assertEqual(result.mode, "encode")
-        self.assertTrue(any("帧率不一致" in w for w in self.log.last(
-            verb="splice", event="done").fields["warnings"]))
-        # 一次 copy 都不该尝试
-        copy_calls = [c for c in fake.calls
-                      if "-f" in c and "concat" in c and "copy" in c]
-        self.assertEqual(copy_calls, [])
 
     def test_matching_fps_uses_copy(self):
         self.touch_long()

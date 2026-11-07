@@ -253,6 +253,53 @@ def duration_matches(path: Path, ffprobe: str, expected: float,
     return abs(actual - expected) <= max(tolerance, expected * 0.03)
 
 
+def normalize_template(runner: Runner, ffmpeg: str, path: Path, fps: float,
+                       cache_dir: Path, encode: dict,
+                       timeout: float = 1800) -> Optional[Path]:
+    """把片头/片尾转成和正片一致的帧率，缓存起来供 `-c copy` 使用。
+
+    **为什么值得做**：`-c copy` 要求各段时间基一致。正片 30fps、片头片尾 25fps
+    时只能重编码 —— 实测 2 分钟的成片要 80 秒，21 分钟的素材要 29 分钟。
+    而 `-c copy` 是搬字节，同样的活几秒钟。
+
+    转换只做一次（按「文件修改时间 + 目标帧率」缓存），之后每个合集都走 copy。
+
+    Returns:
+        缓存文件路径；失败返回 None（调用方退回重编码）
+    """
+    if not fps:
+        return None
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+
+    key = f"{path.stem}_{int(stat.st_mtime)}_{fps:g}fps.mp4"
+    out = cache_dir / key
+    if out.is_file() and out.stat().st_size > 0:
+        return out
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    encoder = str(encode.get("encoder", "libx264"))
+    args = [ffmpeg, "-y", "-i", str(path),
+            "-vf", f"fps={fps:g},setsar=1,format=yuv420p",
+            "-c:v", encoder]
+    # qsv/nvenc 用 -global_quality，libx264 用 -crf
+    if encoder.endswith(("_qsv", "_nvenc", "_amf")):
+        args += ["-global_quality", str(encode.get("quality", 23))]
+    else:
+        args += ["-crf", str(encode.get("quality", 23)),
+                 "-preset", str(encode.get("preset", "medium"))]
+    args += ["-c:a", str(encode.get("audio_codec", "aac")),
+             "-b:a", str(encode.get("audio_bitrate", "128k")),
+             "-movflags", "+faststart", str(out)]
+
+    code, _err = runner(args, timeout)
+    if code != 0 or not out.is_file() or out.stat().st_size == 0:
+        return None
+    return out
+
+
 # ─────────────────────────── 单个合集 ───────────────────────────
 
 def find_long_video(project: Project, collection: Collection) -> Optional[Path]:
@@ -361,6 +408,21 @@ def splice_collection(project: Project, collection: Collection, *,
         media.probe_fps(project.ffprobe, outro),
     }
     fps_mismatch = bool(source_fps) and any(f and abs(f - source_fps) > 0.01 for f in tpl_fps)
+
+    # 帧率不一致时，先把片头片尾**一次性**转成同帧率缓存起来，
+    # 之后就还能走 copy —— 否则每集都要重编码，慢 14 倍（实测 80 秒/集）。
+    intro_use, outro_use = intro, outro
+    if fps_mismatch:
+        cache_dir = project.batch_dir / "log" / "cache" / "templates"
+        n_intro = normalize_template(runner, ffmpeg, intro, source_fps, cache_dir, encode_cfg)
+        n_outro = normalize_template(runner, ffmpeg, outro, source_fps, cache_dir, encode_cfg)
+        if n_intro is not None and n_outro is not None:
+            intro_use, outro_use = n_intro, n_outro
+            fps_mismatch = False
+            fps_text = "、".join(f"{f:g}" for f in sorted(tpl_fps) if f)
+            warnings.append(f"片头片尾 {fps_text}fps 与正片 {source_fps:g}fps 不一致，"
+                            f"已缓存转换版本，本次走 copy")
+            print(f"  片头片尾已转为 {source_fps:g}fps（缓存 {cache_dir}），走 copy 拼接")
     if fps_mismatch:
         fps_text = "、".join(f"{f:g}" for f in sorted(tpl_fps) if f)
         warnings.append(f"帧率不一致（正片 {source_fps:g}fps，片头片尾 {fps_text}fps）"
@@ -370,10 +432,10 @@ def splice_collection(project: Project, collection: Collection, *,
         for seg in segments:
             seg.output.parent.mkdir(parents=True, exist_ok=True)
             cut_copy(runner, ffmpeg, long_video, seg)
-            parts = [intro, seg.temp, outro]
-            expected = (media.probe_duration(project.ffprobe, intro)
+            parts = [intro_use, seg.temp, outro_use]
+            expected = (media.probe_duration(project.ffprobe, intro_use)
                         + seg.duration
-                        + media.probe_duration(project.ffprobe, outro))
+                        + media.probe_duration(project.ffprobe, outro_use))
             used_copy = False
             if not fps_mismatch:
                 used_copy = concat_copy(runner, ffmpeg, parts, seg.output, seg.output.parent)
