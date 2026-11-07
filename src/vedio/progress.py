@@ -28,7 +28,11 @@ from typing import Any, Optional
 FILE_NAME = "进度.md"
 
 #: 所有环节。顺序即表格列序。
-STAGES: tuple[str, ...] = ("剪辑", "字幕", "导出", "拼接", "命名", "台账")
+#:
+#: 「篇名」在「字幕」之后、「导出」之前 —— 这是硬约束，不是排版偏好：
+#: 台账要有篇名才成立，而台账是交付凭证。导出是长流程，等导完、拼完、
+#: 要写台账了才发现没篇名，等于白跑一整轮。
+STAGES: tuple[str, ...] = ("剪辑", "字幕", "篇名", "导出", "拼接", "命名", "台账")
 
 #: 空单元格
 EMPTY = "·"
@@ -102,6 +106,10 @@ class ProgressTable:
     def parse(cls, text: str) -> "ProgressTable":
         """解析已有文件。
 
+        **自动补列**：老批次的表可能没有后来新增的环节列（比如「篇名」）。
+        缺列时按 `STAGES` 的顺序插进去、填 `·`，而不是把整张表判为坏表重建 ——
+        重建会把人在表格里记的状态全丢掉。
+
         Raises:
             ProgressFormatError: 找不到表格 / 表头第一列不是 `合集`
         """
@@ -123,12 +131,28 @@ class ProgressTable:
         idx = body_start
         while idx < len(lines) and lines[idx].strip().startswith("|"):
             cells = _cells(lines[idx])
-            # 补齐/截断到表头宽度，免得少一列就整行错位
             cells = (cells + [""] * len(header))[:len(header)]
             rows.append(cells)
             idx += 1
 
-        return cls(pre=lines[:start], header=header, rows=rows, post=lines[idx:])
+        table = cls(pre=lines[:start], header=header, rows=rows, post=lines[idx:])
+        table._add_missing_columns()
+        return table
+
+    def _add_missing_columns(self) -> None:
+        """把 `STAGES` 里缺的列补进来（老表加了新环节时用）。"""
+        missing = [s for s in STAGES if s not in self.header]
+        if not missing:
+            return
+        for stage in missing:
+            # 插到它该在的位置：找 STAGES 里排在它前面、且表里已有的那一列
+            order = list(STAGES)
+            pos_after = [self.header.index(s) for s in order[:order.index(stage)]
+                         if s in self.header]
+            pos = (max(pos_after) + 1) if pos_after else len(self.header)
+            self.header.insert(pos, stage)
+            for row in self.rows:
+                row.insert(pos, EMPTY)
 
     @classmethod
     def load(cls, path: Path) -> "ProgressTable":

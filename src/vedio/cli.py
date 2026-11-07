@@ -257,6 +257,37 @@ def _jianying_ready(args: argparse.Namespace, verb: str) -> bool:
     return False
 
 
+def _titled_or_complain(args: argparse.Namespace, project: context.Project,
+                        verb: str) -> bool:
+    """确认要处理的合集都有篇名（副标题）。
+
+    为什么是硬约束：台账必须有篇名，而台账是交付凭证；成片的文件名也要篇名。
+    导出/拼接是长流程，等跑完要写台账了才发现没篇名，整轮白费。
+    所以这里前置拦住，并告诉人该跑哪条命令。
+    """
+    try:
+        names = [c.name for c in project.resolve_collections(_split_list(args.collections))]
+    except Exception:
+        return True
+    missing = [n for n in names if not (project.subtitle_for(n) or "").strip()]
+    if not missing:
+        return True
+
+    message = (f"这些合集还没有篇名：{'、'.join(missing)}。\n"
+               f"  台账和成片文件名都要用它，先定下来：\n"
+               f"    vedio series --game {project.game} --batch {project.batch} "
+               f"--groups \"{'、'.join(missing)}=篇名\"\n"
+               f"  （两个合集是同一篇的上下集就写在一起，"
+               f"如 \"合集一,合集二=收集强力变身\"）")
+    if args.json:
+        print(json.dumps({"ok": False, "error": "title_missing",
+                          "collections": missing, "message": message},
+                         ensure_ascii=False, indent=2), file=_result_err())
+    else:
+        print(f"⚠ {message}", file=_result_err())
+    return False
+
+
 def cmd_export(args: argparse.Namespace, project: context.Project) -> int:
     """批量导出草稿（会点剪映，耗时最长）"""
     from . import space
@@ -269,6 +300,12 @@ def cmd_export(args: argparse.Namespace, project: context.Project) -> int:
     # 放在空间预检**前面**：剪映没开的话，算完空间也没法导，
     # 不如第一句就告诉人该干什么。
     if not _jianying_ready(args, "导出"):
+        return EXIT_FAIL
+
+    # ── ①.5 篇名定了吗 ──
+    # 篇名在流程里排在导出**之前**（进度表也是这么排的）：台账要用它，
+    # 成片文件名也要用它。等导完拼完才发现没有，整轮白跑。
+    if not _titled_or_complain(args, project, "导出"):
         return EXIT_FAIL
 
     # ── ② 导出前把「导出 + 拼接」一起算 ──
@@ -567,11 +604,36 @@ def cmd_run(args: argparse.Namespace, project: context.Project) -> int:
 # ─────────────────────────── 动词：series ───────────────────────────
 
 def cmd_series(args: argparse.Namespace, project: context.Project) -> int:
-    """给一组合集定「篇名 + 上下篇」（rename 的前置）"""
+    """给一组合集定「篇名 + 上下篇」（rename / 台账的前置）"""
     from .events import EventLog
     from .stages import series as series_stage
 
+    # --suggest：先让模型提一个篇名给人看，**不写任何文件**
+    if getattr(args, "suggest", None):
+        names = _split_list(args.suggest) or []
+        with _quiet_stdout(args.json):
+            result = series_stage.suggest(project, names)
+        if args.json:
+            payload = {"ok": result["ok"], **result}
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return EXIT_OK if result["ok"] else EXIT_FAIL
+        if not result["ok"]:
+            print(f"✗ 提不出篇名：{result['error']}", file=_result_err())
+            return EXIT_FAIL
+        same = len(names) == 1
+        print(f"我给这一组起了个篇名：{result['name']}")
+        if len(names) > 1:
+            print(f"  这几个合集算同一篇（{'上篇/下篇' if len(names) == 2 else '多篇'}）。")
+        # 命令里的分隔符必须是逗号 —— parse_groups 按逗号切，顿号会解析失败
+        print(f"\n  用这个名字：vedio series --groups \"{','.join(names)}={result['name']}\"")
+        print("  或者换一个（改上面的名字再跑一次）")
+        return EXIT_OK
+
     log = EventLog(project.log_dir)
+    if not args.groups:
+        return _fail("no_groups",
+                     "要么给 --groups \"合集一,合集二=篇名\"，要么给 --suggest 让模型提一个",
+                     args.json)
     with _quiet_stdout(args.json):
         result = series_stage.apply(project, args.groups, log=log, force=args.force)
     payload = result.as_dict()
@@ -711,8 +773,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_series = sub.add_parser("series", help="给一组合集定「篇名 + 上下篇」（rename 前置）")
     add_common(p_series)
-    p_series.add_argument("--groups", required=True,
+    p_series.add_argument("--groups", required=False,
                           help="分组写法：合集一,合集二=篇名;合集三=另一篇名")
+    p_series.add_argument("--suggest", metavar="合集一,合集二",
+                          help="让模型根据标题提一个篇名，只给人看，不写文件")
     p_series.add_argument("--force", action="store_true", help="副标题一样也重写")
     p_series.set_defaults(handler=cmd_series)
 

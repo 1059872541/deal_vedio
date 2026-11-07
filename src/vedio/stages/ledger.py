@@ -206,6 +206,21 @@ def build_ledger(project: Project, collections: Optional[list[str]] = None, *,
         log.emit("ledger", "skip", reason="already_done", file=out.name)
         return LedgerResult("skip", path=out, message=f"{out.name} 已存在（--force 可重写）")
 
+    # ── 硬约束：没有篇名不许写台账 ──
+    # 台账是交付凭证，篇名那一列空了，甲方拿到的就是一张半成品表。
+    # 而且台账一旦生成，后面再补篇名就得整份重写 —— 不如现在拦住。
+    try:
+        targets = [c.name for c in project.resolve_collections(collections)]
+    except Exception:
+        targets = []
+    missing = [n for n in targets if not (project.subtitle_for(n) or "").strip()]
+    if missing:
+        message = (f"这些合集还没有篇名：{'、'.join(missing)}。"
+                   f"台账必须有篇名，先跑 vedio series 定下来。")
+        log.emit("ledger", FAIL, error="title_missing", message=message,
+                 collections=missing)
+        return LedgerResult("fail", error="title_missing", message=message)
+
     try:
         rows, problems = collect_rows(project, collections)
     except Exception as exc:                 # noqa: BLE001

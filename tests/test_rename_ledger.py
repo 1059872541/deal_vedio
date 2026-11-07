@@ -258,8 +258,16 @@ class TestLedger(Base):
         again = L.build_ledger(self.p, ["合集一"], log=self.log, force=True)
         self.assertEqual(again.status, "done")
 
-    def test_no_data_fails(self):
+    def test_missing_title_blocks_ledger(self):
+        """台账必须有篇名：合集二没有副标题，直接拒绝，不是写一张空表"""
         result = L.build_ledger(self.p, ["合集二"], log=self.log)
+        self.assertEqual(result.status, "fail")
+        self.assertEqual(result.error, "title_missing")
+        self.assertIn("篇名", result.message)
+
+    def test_no_data_fails(self):
+        """有篇名、但没有成片 → no_data"""
+        result = L.build_ledger(self.p, ["合集一"], log=self.log)
         self.assertEqual(result.status, "fail")
         self.assertEqual(result.error, "no_data")
 

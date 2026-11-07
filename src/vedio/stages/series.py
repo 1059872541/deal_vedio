@@ -25,6 +25,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from .. import progress
 from ..context import Project
 from ..events import DONE, FAIL, EventLog
 
@@ -198,10 +199,83 @@ def apply(project: Project, spec: str, *, log: Optional[EventLog] = None,
     already = text == new_text
     if already and not force:
         log.emit("series", "skip", reason="already_set", assignments=assignments)
+        _mark_titled(project, assignments)
         return SeriesResult("skip", assignments=assignments,
                             message="副标题已经一样，跳过")
 
     titles_file.write_text(new_text, encoding="utf-8", newline="\n")
     log.emit("series", DONE, assignments=assignments, appended_sections=appended)
+    _mark_titled(project, assignments)
     return SeriesResult("done", assignments=assignments,
                         message=f"{len(assignments)} 个合集的副标题已写入")
+
+
+def _mark_titled(project: Project, assignments: dict[str, str]) -> None:
+    """篇名定好后，在进度表里给这些合集打勾。
+
+    篇名是**导出之前**的硬门槛（见 `progress.STAGES` 的注释）：
+    台账必须有篇名，而台账是交付凭证。所以这一步成功就要留痕。
+    """
+    for name in assignments:
+        progress.record(project, name, "篇名")
+
+
+# ─────────────────────────── 让模型提一个篇名 ───────────────────────────
+
+SUGGEST_SYSTEM = """\
+你是游戏实况视频的运营编辑。用户会给你几个合集的每集标题。
+请概括这一组内容，给整个系列起一个**篇名**。
+
+要求：
+- 中文，4~10 个字，像一个栏目标题，不是句子
+- 不要包含游戏名、主播名（那是文件名里另外的部分）
+- 不要带「上篇」「下篇」「合集」这类字眼
+- 只输出篇名本身，不要解释、不要引号、不要标点
+"""
+
+
+def build_suggest_prompt(project: Project, collections: list[str]) -> str:
+    """把各合集的标题拼成给模型的输入。"""
+    blocks = []
+    for name in collections:
+        titles = project.titles_of(name) or []
+        if not titles:
+            continue
+        lines = "\n".join(f"{i}. {t}" for i, t in enumerate(titles, 1))
+        blocks.append(f"【{name}】\n{lines}")
+    return "\n\n".join(blocks)
+
+
+def suggest(project: Project, collections: list[str],
+            client: Optional[object] = None) -> dict[str, Any]:
+    """根据标题让模型提一个篇名，**不写入任何文件**，只给人看。
+
+    为什么要模型提：篇名要概括 20 条标题的共同主题，人翻一遍也费劲。
+    但最终由人拍板 —— 篇名是门面，定错了文件名、台账、网盘目录三处全错。
+    """
+    prompt = build_suggest_prompt(project, collections)
+    if not prompt:
+        return {"ok": False, "name": "", "collections": collections,
+                "error": "titles_missing"}
+
+    if client is None:
+        try:
+            from deal_video_agent.agent.tools.deepseek_api import DeepSeekClient
+            client = DeepSeekClient()
+        except Exception as exc:                      # noqa: BLE001
+            return {"ok": False, "name": "", "collections": collections,
+                    "error": f"model_unavailable: {exc}"}
+
+    try:
+        text, _usage = client.chat(SUGGEST_SYSTEM, prompt)   # type: ignore[attr-defined]
+    except Exception as exc:                          # noqa: BLE001
+        return {"ok": False, "name": "", "collections": collections,
+                "error": f"model_failed: {exc}"}
+
+    raw = (text or "").strip()
+    name = raw.splitlines()[0].strip() if raw else ""
+    name = name.strip("\"'“”「」《》 　.,，。")
+    if not name:
+        return {"ok": False, "name": "", "collections": collections,
+                "error": "empty_response"}
+    return {"ok": True, "name": name, "collections": collections, "error": None}

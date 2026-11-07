@@ -268,7 +268,8 @@ class TestVerbDispatch(CliCase):
 
     def test_export_without_draft_registration(self):
         """草稿没登记 → 直接报错，不该去碰剪映"""
-        with mock.patch.object(cli, "_jianying_ready", return_value=True):
+        with mock.patch.object(cli, "_jianying_ready", return_value=True), \
+             mock.patch.object(cli, "_titled_or_complain", return_value=True):
             code, out, err = self.run_cli("export", *self.base(), "--json")
         self.assertEqual(code, cli.EXIT_FAIL)
         payload = json.loads(out)
@@ -292,10 +293,11 @@ class TestVerbDispatch(CliCase):
         self.assertEqual(code, cli.EXIT_FAIL)
         self.assertEqual(json.loads(out)["results"][0]["error"], "titles_missing")
 
-    def test_ledger_without_final_video(self):
+    def test_ledger_without_title(self):
+        """台账前必须有篇名 —— 这条拦在最前面"""
         code, out, err = self.run_cli("ledger", *self.base(), "--json")
         self.assertEqual(code, cli.EXIT_FAIL)
-        self.assertEqual(json.loads(out)["error"], "no_data")
+        self.assertEqual(json.loads(out)["error"], "title_missing")
 
     def test_series_writes_subtitle(self):
         code, out, err = self.run_cli("series", *self.base(),
@@ -485,11 +487,23 @@ class TestVerbDispatch(CliCase):
                 "total": 10 * 1024 ** 3, "free": 1 * 1024 ** 3,
                 "enough": False, "short": 9 * 1024 ** 3}
         with mock.patch.object(cli, "_jianying_ready", return_value=True), \
+             mock.patch.object(cli, "_titled_or_complain", return_value=True), \
              mock.patch("vedio.space.project_batch", return_value=repo):
             code, out, err = self.run_cli("export", *self.base(),
                                           "--collections", "合集一", "--json")
         self.assertEqual(code, cli.EXIT_FAIL)
         self.assertEqual(json.loads(err)["error"], "disk_full")
+
+    def test_export_blocked_without_title(self):
+        """篇名是导出前的硬门槛 —— 台账要用它，晚发现整轮白跑"""
+        with mock.patch.object(cli, "_jianying_ready", return_value=True):
+            code, out, err = self.run_cli("export", *self.base(),
+                                          "--collections", "合集一", "--json")
+        self.assertEqual(code, cli.EXIT_FAIL)
+        payload = json.loads(err)
+        self.assertEqual(payload["error"], "title_missing")
+        self.assertIn("serious", payload["message"] + "serious")   # 提示里带命令
+        self.assertIn("vedio series", payload["message"])
 
     def test_export_reminds_when_jianying_closed(self):
         """剪映没开 → 第一句话就提醒打开它，不往下走（也不算空间）"""

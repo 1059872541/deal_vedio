@@ -39,9 +39,14 @@ class TempCase(unittest.TestCase):
 class TestCreate(unittest.TestCase):
     def test_header_and_rows(self):
         t = P.ProgressTable.create("我的世界-2026-12", ["合集一", "合集二"])
-        self.assertEqual(t.header, ["合集", "剪辑", "字幕", "导出", "拼接", "命名", "台账"])
+        self.assertEqual(t.header, ["合集", "剪辑", "字幕", "篇名", "导出", "拼接", "命名", "台账"])
         self.assertEqual(t.collections(), ["合集一", "合集二"])
         self.assertTrue(all(c == P.EMPTY for c in t.rows[0][1:]))
+
+    def test_title_stage_sits_before_export(self):
+        """篇名必须在导出之前 —— 台账要用它，台账是交付凭证"""
+        self.assertLess(P.STAGES.index("篇名"), P.STAGES.index("导出"))
+        self.assertGreater(P.STAGES.index("篇名"), P.STAGES.index("字幕"))
 
     def test_banner_says_hand_editable(self):
         text = P.ProgressTable.create("X", ["合集一"]).render()
@@ -97,7 +102,17 @@ class TestParse(TempCase):
     def test_row_shorter_than_header_is_padded(self):
         text = "| 合集 | 剪辑 | 字幕 |\n|---|---|---|\n| 合集一 | ✓ |\n"
         t = P.ProgressTable.parse(text)
-        self.assertEqual(t.rows[0], ["合集一", "✓", ""])
+        self.assertEqual(t.cell("合集一", "剪辑"), "✓")
+        self.assertEqual(len(t.rows[0]), len(t.header))
+
+    def test_missing_stage_column_is_added(self):
+        """老表没有「篇名」列 → 自动补上，且已有的 ✓ 不能丢"""
+        old = ("| 合集 | 剪辑 | 字幕 | 导出 |\n|---|---|---|---|\n| 合集一 | ✓ | ✓ | · |\n")
+        t = P.ProgressTable.parse(old)
+        self.assertIn("篇名", t.header)
+        self.assertLess(t.header.index("篇名"), t.header.index("导出"))
+        self.assertEqual(t.cell("合集一", "剪辑"), "✓")
+        self.assertEqual(t.cell("合集一", "篇名"), P.EMPTY)
 
     def test_separator_optional(self):
         text = "| 合集 | 剪辑 |\n| 合集一 | ✓ |\n"
@@ -256,12 +271,9 @@ class TestRecord(TempCase):
         self.assertEqual(self.table().cell("合集一", "字幕"), P.DONE)
 
     def test_unknown_stage_does_not_raise(self):
-        """表头少一列也不能把一次成功的导出搞成失败"""
+        """表里没有这个环节 → 返回 False，绝不抛（一次成功的导出不该被它搞失败）"""
         P.write_initial(self.tmp, "我的世界-2026-12", ["合集一"])
-        raw = (self.tmp / P.FILE_NAME).read_text(encoding="utf-8")
-        (self.tmp / P.FILE_NAME).write_text(
-            raw.replace("| 合集 | 剪辑 |", "| 合集 | 备注 |"), encoding="utf-8")
-        self.assertFalse(P.record(self.project, "合集一", "剪辑"))
+        self.assertFalse(P.record(self.project, "合集一", "不存在的环节"))
 
     def test_bad_project_does_not_raise(self):
         class Broken:
