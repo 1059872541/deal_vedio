@@ -330,7 +330,8 @@ def generate_copy(project: Project, collection: str, titles: list[str],
                   client: Optional[object] = None,
                   used_keywords: Optional[list[str]] = None,
                   prev_collection: str = "",
-                  prev_intro: str = "") -> tuple[str, str]:
+                  prev_intro: str = "",
+                  feedback: str = "") -> tuple[str, str]:
     """让模型生成 (内容介绍, 关键字)。失败返回 ("", "")，不让它拖垮台账。"""
     if not titles:
         return "", ""
@@ -351,6 +352,8 @@ def generate_copy(project: Project, collection: str, titles: list[str],
                                used_keywords=used_keywords,
                                prev_collection=prev_collection,
                                prev_intro=prev_intro)
+    if feedback:
+        prompt += "\n\n上一次生成不合格，必须修正：\n" + feedback
     try:
         text, _usage = client.chat(system_prompt, prompt)   # type: ignore[attr-defined]
     except Exception:
@@ -370,6 +373,55 @@ def generate_copy(project: Project, collection: str, titles: list[str],
         return "", ""
     return (normalize_intro(str(data.get("intro") or "")),
             normalize_keywords(str(data.get("keywords") or "")))
+
+
+def check_copy(intro: str, keywords: str, used: set[str]) -> list[str]:
+    """校验内容介绍/关键字是否达标。返回问题清单（空 = 合格）。"""
+    problems: list[str] = []
+    if not (20 <= len(intro) <= 40):
+        problems.append(f"内容介绍 {len(intro)} 字，必须 20~40 字")
+    fresh = [k for k in keywords.split("、") if k and k not in used]
+    if len(fresh) < 4:
+        problems.append(f"可用的新关键词只有 {len(fresh)} 个，必须 4~6 个")
+    if len(fresh) > 6:
+        problems.append(f"关键词 {len(fresh)} 个，最多 6 个")
+    return problems
+
+
+def generate_copy_checked(project: Project, collection: str, titles: list[str],
+                          client: Optional[object] = None,
+                          used_keywords: Optional[list[str]] = None,
+                          prev_collection: str = "",
+                          prev_intro: str = "",
+                          attempts: int = 2) -> tuple[str, str, list[str]]:
+    """生成 → 校验 → 不合格就带着具体问题重试。
+
+    **为什么必须有这一步**：提示词里写了"20~40 字"，实测模型照样给 76 字。
+    光靠提示词约束字数不可靠，必须生成后量一遍，不合格就明确告诉它差在哪、
+    再要一次。两次都不合格才如实报出来，不静默接受。
+
+    Returns:
+        (intro, keywords, problems) —— problems 为空表示达标
+    """
+    used = set(used_keywords or [])
+    intro = keywords = ""
+    problems: list[str] = []
+    for i in range(max(1, attempts)):
+        intro, keywords = generate_copy(
+            project, collection, titles, client=client,
+            used_keywords=sorted(used),
+            prev_collection=prev_collection, prev_intro=prev_intro,
+            feedback="；".join(problems) if problems else "",
+        )
+        if not intro and not keywords:
+            problems = ["模型没有返回可解析的 JSON"]
+            continue
+        problems = check_copy(intro, keywords, used)
+        if not problems:
+            return intro, keywords, []
+        if i + 1 < attempts:
+            print(f"  {collection} 文案不达标（{'；'.join(problems)}），重试一次")
+    return intro, keywords, problems
 
 
 def fill_ai_columns(path: Path, blocks: list[tuple[int, int, str, list[str]]],
@@ -394,7 +446,7 @@ def fill_ai_columns(path: Path, blocks: list[tuple[int, int, str, list[str]]],
     prev_intro = ""
 
     for start_row, count, name, titles in blocks:
-        intro, keywords = generate_copy(
+        intro, keywords, bad = generate_copy_checked(
             project, name, titles, client=client,
             used_keywords=sorted(used),
             prev_collection=prev_collection, prev_intro=prev_intro,
@@ -402,6 +454,8 @@ def fill_ai_columns(path: Path, blocks: list[tuple[int, int, str, list[str]]],
         if not intro and not keywords:
             problems.append(f"{name}: 内容介绍/关键字没生成出来")
             continue
+        for item in bad:
+            problems.append(f"{name}: {item}（重试后仍不达标）")
 
         keywords, dropped = dedupe_keywords(keywords, used)
         if dropped:
@@ -409,12 +463,6 @@ def fill_ai_columns(path: Path, blocks: list[tuple[int, int, str, list[str]]],
 
         ws.cell(row=start_row, column=11, value=intro)      # K
         ws.cell(row=start_row, column=12, value=keywords)   # L
-
-        if not (20 <= len(intro) <= 40):
-            problems.append(f"{name}: 内容介绍 {len(intro)} 字（要求 20~40）")
-        n_kw = len([k for k in keywords.split("、") if k])
-        if n_kw < 4:
-            problems.append(f"{name}: 去重后只剩 {n_kw} 个关键词（要求 4~6）")
 
         record[name] = {"intro": intro, "keywords": keywords}
         prev_collection, prev_intro = name, intro
