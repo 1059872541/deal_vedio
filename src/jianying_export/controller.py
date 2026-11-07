@@ -166,15 +166,20 @@ class JianyingController:
     # ─────────────────────────── 等待原语 ───────────────────────────
 
     def _poll(self, probe: Callable[[], object], label: str,
-              timeout: Optional[float] = None, interval: Optional[float] = None):
+              timeout: Optional[float] = None, interval: Optional[float] = None,
+              heartbeat: float = 15.0):
         """轮询直到 probe() 返回真值；超时抛 AutomationError。
 
         用条件等待代替固定 sleep：剪映的渲染时间与草稿时长强相关，
         固定值在短草稿上浪费、在长草稿上可能还不够。
+
+        `heartbeat`：每隔这么久打印一句"还在等"，否则长时间等待时
+        控制台**一片死寂**，人看着就像程序卡死了（实际踩过）。
         """
         timeout = self.UI_TIMEOUT if timeout is None else timeout
         interval = self.POLL_INTERVAL if interval is None else interval
         start = time.time()
+        last_note = start
         while True:
             try:
                 value = probe()
@@ -182,8 +187,12 @@ class JianyingController:
                 value = None
             if value:
                 return value
+            now = time.time()
             if time.time() - start > timeout:
                 raise AutomationError(f"等待「{label}」超时（{timeout:.0f} 秒）")
+            if heartbeat and now - last_note >= heartbeat:
+                print(f"  还在等「{label}」…（已等 {now - start:.0f} 秒）")
+                last_note = now
             time.sleep(interval)
 
     def _safe_refresh(self) -> None:
@@ -345,7 +354,15 @@ class JianyingController:
                 except AutomationError as exc:
                     last_error = exc
                     if i < attempts:
-                        print(f"导出面板没弹出，重试（第 {i} 次点击）")
+                        print(f"导出面板没弹出，复位后重试（第 {i} 次点击失败）")
+                        # 复位：先把可能残留在打开状态的面板关掉、退回首页，
+                        # 再重新点。直接连点效果更差 —— 剪映还停在上一次的状态里。
+                        self.close_export_panel()
+                        try:
+                            self.switch_to_home()
+                        except AutomationError:
+                            pass
+                        time.sleep(2.0)
             time.sleep(1.0)
 
         raise AutomationError(

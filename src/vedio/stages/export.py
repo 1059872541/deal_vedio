@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import time
 from typing import Any, Callable, Optional
 
 from .. import context, media
@@ -332,9 +333,25 @@ def export_drafts(project: Project, collections: Optional[list[str]] = None,
 
     targets = project.resolve_collections(collections)
     batch = ExportBatch()
-    for c in targets:
+    pause = _pause_between(project)
+    for index, c in enumerate(targets):
+        if index and pause > 0:
+            # 旧实现（export_draft.py）里有 PAUSE_BETWEEN = 10 秒，移植时丢了。
+            # 丢了之后实测：合集一刚写完 1.33 GB（21:40:02），合集二 8 秒后
+            # 就接着点「导出」，剪映还在收尾 → 点击被吞、面板不弹。
+            print(f"  等 {pause:g} 秒再导下一个（让剪映收拾干净）…")
+            time.sleep(pause)
         batch.results.append(
             export_collection(project, c, controller, log=log, force=force,
                               enums=enums, controller_factory=controller_factory)
         )
     return batch
+
+
+def _pause_between(project: Project) -> float:
+    """两个合集之间的间隔（秒），来自 `export.pause_between`，默认 10。"""
+    raw = project.rule("export.pause_between", 10)
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return 10.0

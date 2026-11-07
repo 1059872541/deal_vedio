@@ -34,6 +34,7 @@ export:
   resolution: 1080P
   framerate: 30fps
   timeout_seconds: 3600
+  pause_between: 0
 duration:
   material_per_collection: 1200
   episode_body: 60
