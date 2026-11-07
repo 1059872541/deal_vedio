@@ -11,23 +11,73 @@ from typing import Optional
 class TitlesManager:
     """标题管理器"""
     
-    def __init__(self, base_dir: str, title_file: str = "titles/all_collection_titles.md"):
+    def __init__(self, base_dir: str, title_file: str = "titles/all_collection_titles.md",
+                 game_name: Optional[str] = None):
         """
         初始化标题管理器
         
         Args:
             base_dir: 项目根目录
             title_file: 标题文件名（相对于 base_dir）
+            game_name: 游戏名，用于生成一级标题。不传则从文件名反推
+                       （`我的世界-2026-06_titles.md` → `我的世界`）
         """
         self.base_dir = Path(base_dir)
         self.title_file = self.base_dir / title_file
+        self.game_name = game_name or self._derive_game_name()
+        #: 解析时填充：各合集节里的副标题
+        self._section_subtitles: dict = {}
         self._ensure_title_file()
     
+    #: 批次后缀，用来从标题文件名反推游戏名：``我的世界-2026-06`` → ``我的世界``
+    _BATCH_SUFFIX = re.compile(r"-\d{4}-\d{2}$")
+
+    #: 合集小节标题行：``#### 合集一:收集强力变身-上篇``（副标题可省略）
+    _SECTION_HEADER = re.compile(r"^####\s*([^:：]+?)\s*(?:[:：]\s*(.*))?$")
+
+    def _derive_game_name(self) -> str:
+        """从标题文件名反推游戏名。
+
+        ``titles/我的世界-2026-06_titles.md`` → ``我的世界``
+        ``titles/足球在线4-2026-06_titles.md`` → ``足球在线4``
+        推不出来就退回文件名主干，宁可难看也不写死。
+        """
+        stem = self.title_file.stem
+        if stem.endswith("_titles"):
+            stem = stem[: -len("_titles")]
+        stem = self._BATCH_SUFFIX.sub("", stem).strip()
+        return stem or self.title_file.stem
+
+    @property
+    def _header(self) -> str:
+        """文件一级标题。
+
+        原实现三处都写死 ``# 我的世界系列视频标题列表``，导致
+        ``足球在线4-2026-06_titles.md`` 的第一行也变成"我的世界"。
+        """
+        return f"# {self.game_name}系列视频标题列表\n\n"
+
+    @classmethod
+    def _parse_section_header(cls, line: str):
+        """拆出合集名与副标题。
+
+        ``#### 合集一:收集强力变身-上篇`` → ``("合集一", "收集强力变身-上篇")``
+        ``#### 合集一`` → ``("合集一", None)``
+
+        原实现用 ``replace(':', '')`` 把整行变成一个 key，
+        副标题被并进名字里，于是覆盖匹配永远失败。
+        """
+        m = cls._SECTION_HEADER.match(line.strip())
+        if not m:
+            return line.replace("####", "").strip(), None
+        subtitle = (m.group(2) or "").strip()
+        return m.group(1).strip(), (subtitle or None)
+
     def _ensure_title_file(self):
         """确保标题文件存在"""
         if not self.title_file.exists():
             self.title_file.parent.mkdir(parents=True, exist_ok=True)
-            self.title_file.write_text("# 我的世界系列视频标题列表\n\n", encoding='utf-8')
+            self.title_file.write_text(self._header, encoding='utf-8')
     
     def clear_all_titles(self) -> bool:
         """
@@ -37,12 +87,31 @@ class TitlesManager:
             是否成功
         """
         try:
-            self.title_file.write_text("# 我的世界系列视频标题列表\n\n", encoding='utf-8')
+            self.title_file.write_text(self._header, encoding='utf-8')
             return True
         except Exception as e:
             print(f"清空标题失败: {e}")
             return False
     
+    @staticmethod
+    def _is_title_line(line: str) -> bool:
+        """判断一行是不是"标题"。
+
+        要排除的不只是注释和分隔符，还有 ``公共前缀:波波之我的世界`` ——
+        原实现漏了它，导致这条前缀被当成一条已有标题喂给 LLM 做去重，
+        既干扰提示词，也会让 ``is_duplicate`` 误判。
+        """
+        s = line.strip()
+        if not s:
+            return False
+        if s.startswith("#") or s.startswith("---"):
+            return False
+        if s.startswith("公共前缀"):
+            return False
+        if s.startswith("**") and s.endswith("**"):
+            return False
+        return True
+
     def read_all_titles(self) -> str:
         """
         读取所有已有标题
@@ -55,13 +124,7 @@ class TitlesManager:
         
         content = self.title_file.read_text(encoding='utf-8')
         
-        lines = content.split('\n')
-        titles = []
-        for line in lines:
-            line = line.strip()
-            if line and not line.startswith('#') and not line.startswith('---') and not line.startswith('####'):
-                if not line.startswith('**') and not line.endswith('**'):
-                    titles.append(line)
+        titles = [line.strip() for line in content.split('\n') if self._is_title_line(line)]
         
         return '\n'.join(titles)
     
@@ -77,24 +140,7 @@ class TitlesManager:
         
         content = self.title_file.read_text(encoding='utf-8')
         
-        lines = content.split('\n')
-        titles = []
-        
-        for line in lines:
-            line = line.strip()
-            
-            # 跳过空行
-            if not line:
-                continue
-            
-            # 跳过标记行
-            if line.startswith('#') or line.startswith('---') or line.startswith('####'):
-                continue
-            
-            # 每行是一个标题
-            titles.append(line)
-        
-        return titles
+        return [line.strip() for line in content.split('\n') if self._is_title_line(line)]
     
     def read_all_titles_set(self) -> set[str]:
         """
@@ -150,9 +196,13 @@ class TitlesManager:
             if collection_name in existing_collections and overwrite:
                 # 同名合集需要覆盖 → 全文重建
                 existing_collections[collection_name] = titles
-                new_content = "# 我的世界系列视频标题列表\n\n"
+                new_content = self._header
                 for name, title_list in existing_collections.items():
-                    new_content += f"---\n#### {name}:\n"
+                    subtitle = self._section_subtitles.get(name)
+                    if subtitle:
+                        new_content += f"---\n#### {name}:{subtitle}\n"
+                    else:
+                        new_content += f"---\n#### {name}:\n"
                     for t in title_list:
                         new_content += f"{t}\n"
                     new_content += "\n"
@@ -187,8 +237,11 @@ class TitlesManager:
                 if current_collection and current_titles:
                     collections[current_collection] = current_titles
                 
-                # 提取合集名称
-                current_collection = line_stripped.replace('#### ', '').replace(':', '').strip()
+                # 拆出合集名与副标题。原实现把整行（含副标题）当成 key，
+                # 于是 "合集一" 永远匹配不上 "合集一收集强力变身-上篇"，
+                # overwrite 失效 → 每次重跑都追加一个重复小节。
+                current_collection, subtitle = self._parse_section_header(line_stripped)
+                self._section_subtitles[current_collection] = subtitle
                 current_titles = []
             elif line_stripped and not line_stripped.startswith('#') and not line_stripped.startswith('---'):
                 if current_collection:
