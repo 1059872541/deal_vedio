@@ -451,6 +451,28 @@ class TestVerbDispatch(CliCase):
         self.assertIn("run-splice-", out)
         self.assertIn("vedio logs", out)
 
+    def test_init_add_collections(self):
+        """给已有批次加合集：建目录 + 进度表追加行"""
+        code, out, err = self.run_cli("init", *self.base(), "--add", "合集四,合集五")
+        self.assertEqual(code, 0, err)
+        for name in ("合集四", "合集五"):
+            for sub in ("素材", "剪辑", "成片"):
+                self.assertTrue((self.root / "合集" / name / sub).is_dir(), f"{name}/{sub}")
+        self.assertIn("进度.md", out)
+        progress = (self.root / "进度.md").read_text(encoding="utf-8")
+        self.assertIn("合集四", progress)
+        self.assertIn("合集五", progress)
+
+    def test_init_add_rejects_bad_name(self):
+        code, out, err = self.run_cli("init", *self.base(), "--add", "合集四号", "--json")
+        self.assertEqual(code, cli.EXIT_FAIL)
+        self.assertEqual(json.loads(err)["error"], "bad_collection_name")
+
+    def test_init_add_empty(self):
+        code, out, err = self.run_cli("init", *self.base(), "--add", "", "--json")
+        self.assertEqual(code, cli.EXIT_FAIL)
+        self.assertEqual(json.loads(err)["error"], "no_collections")
+
     def test_all_verbs_have_help(self):
         """十一个动词都要能加载（防 import 错误）"""
         for verb in ("paths", "status", "init", "subtitle", "export",

@@ -157,10 +157,11 @@ class TestPlan(InitCase):
             for sub in ("素材", "剪辑", "成片"):
                 self.assertIn(f"合集/{cname}/{sub}", names)
 
-    def test_three_files(self):
+    def test_four_files(self):
         plan = self.plan()
-        self.assertEqual(sorted(p.name for p in plan.files),
-                         sorted([I.RULES_FILE, I.MANIFEST_FILE, I.TITLES_FILE]))
+        self.assertEqual(
+            sorted(p.name for p in plan.files),
+            sorted([I.RULES_FILE, I.MANIFEST_FILE, I.TITLES_FILE, "进度.md"]))
 
     def test_batch_dir_uses_compound_name(self):
         plan = self.plan()
@@ -261,6 +262,130 @@ class TestApply(InitCase):
         events = log.read()
         self.assertEqual([e.verb for e in events], ["init"])
         self.assertEqual(events[0].event, "done")
+
+
+# ─────────────────────────── 进度表 ───────────────────────────
+
+class TestProgressAtInit(InitCase):
+    def test_init_creates_progress_table(self):
+        """批次一建好就该有地方记进度 —— 全 `·` 等着打勾"""
+        from vedio import progress as P
+        plan = self.plan(collections=2, host="波波")
+        I.apply(plan)
+        path = plan.batch_dir / P.FILE_NAME
+        self.assertTrue(path.is_file())
+        table = P.ProgressTable.load(path)
+        self.assertEqual(table.collections(), ["合集一", "合集二"])
+        self.assertTrue(all(C == P.EMPTY for C in table.rows[0][1:]))
+
+    def test_progress_lists_ignored(self):
+        from vedio import progress as P
+        plan = self.plan(collections=1)
+        plan.rules["ignore_collections"] = ["合集九"]
+        text = I.render_progress(plan)
+        self.assertIn("已忽略", text)
+        self.assertIn("`合集九`", text)
+
+
+# ─────────────────────────── 给已有批次加合集 ───────────────────────────
+
+class TestAddCollections(InitCase):
+    def setUp(self):
+        super().setUp()
+        self.plan0 = self.plan(collections=2, host="波波")
+        I.apply(self.plan0)
+        self.project = context.Project.open(
+            "我的世界", "2026-12", local={"workspace": {"root": str(self.ws)}})
+
+    def test_creates_dirs_and_rows(self):
+        from vedio import progress as P
+        result = I.add_collections(self.project, ["合集四", "合集五"])
+        self.assertEqual(result["added"], ["合集四", "合集五"])
+        self.assertEqual(result["already_present"], [])
+        self.assertEqual(result["created_dirs"], 8)     # 2 个 × (根 + 3 子目录)
+        for name in ("合集四", "合集五"):
+            for sub in ("素材", "剪辑", "成片"):
+                self.assertTrue((self.plan0.batch_dir / "合集" / name / sub).is_dir(), f"{name}/{sub}")
+        table = P.ProgressTable.load(self.plan0.batch_dir / P.FILE_NAME)
+        self.assertEqual(table.collections(), ["合集一", "合集二", "合集四", "合集五"])
+
+    def test_reopens_as_real_collections(self):
+        I.add_collections(self.project, ["合集四"])
+        p2 = context.Project.open("我的世界", "2026-12",
+                                  local={"workspace": {"root": str(self.ws)}})
+        self.assertEqual(p2.collection_names(), ["合集一", "合集二", "合集四"])
+
+    def test_bumps_collections_field(self):
+        result = I.add_collections(self.project, ["合集四"])
+        self.assertEqual(result["collections_field"], 4)
+        rules = (self.plan0.batch_dir / I.RULES_FILE).read_text(encoding="utf-8")
+        self.assertIn("collections: 4", rules)
+
+    def test_does_not_touch_comments(self):
+        """game.yaml 是手写带注释的，行级替换不能动别的内容"""
+        before = (self.plan0.batch_dir / I.RULES_FILE).read_text(encoding="utf-8")
+        I.add_collections(self.project, ["合集四"])
+        after = (self.plan0.batch_dir / I.RULES_FILE).read_text(encoding="utf-8")
+        # 除了 collections 那一行，其余完全一致
+        diff_before = [l for l in before.splitlines() if not l.startswith("collections:")]
+        diff_after = [l for l in after.splitlines() if not l.startswith("collections:")]
+        self.assertEqual(diff_before, diff_after)
+
+    def test_idempotent(self):
+        I.add_collections(self.project, ["合集四"])
+        again = I.add_collections(self.project, ["合集四"])
+        self.assertEqual(again["added"], [])
+        self.assertEqual(again["already_present"], ["合集四"])
+        self.assertIsNone(again["collections_field"])
+
+    def test_does_not_delete_existing_dirs(self):
+        marker = self.plan0.batch_dir / "合集" / "合集一" / "素材" / "keep.txt"
+        marker.write_text("x", encoding="utf-8")
+        I.add_collections(self.project, ["合集四"])
+        self.assertTrue(marker.is_file())
+
+    def test_fills_missing_subdir_only(self):
+        """已经有 剪辑/ 的目录（比如测试素材），只补缺的"""
+        partial = self.plan0.batch_dir / "合集" / "合集九" / "剪辑"
+        partial.mkdir(parents=True)
+        (partial / "a.srt").write_text("x", encoding="utf-8")
+        I.add_collections(self.project, ["合集九"])
+        self.assertTrue((self.plan0.batch_dir / "合集" / "合集九" / "素材").is_dir())
+        self.assertTrue((partial / "a.srt").is_file())
+
+    def test_invalid_name(self):
+        with self.assertRaises(I.InitError) as ctx:
+            I.add_collections(self.project, ["合集四号"])
+        self.assertEqual(ctx.exception.code, "bad_collection_name")
+
+    def test_empty_names(self):
+        with self.assertRaises(I.InitError) as ctx:
+            I.add_collections(self.project, [])
+        self.assertEqual(ctx.exception.code, "no_collections")
+
+    def test_missing_batch(self):
+        """game.yaml 没了就当批次不存在（不猜别的目录凑合）"""
+        (self.plan0.batch_dir / I.RULES_FILE).unlink()
+        with self.assertRaises(I.InitError) as ctx:
+            I.add_collections(self.project, ["合集四"])
+        self.assertEqual(ctx.exception.code, "batch_not_found")
+
+    def test_event_recorded(self):
+        from vedio.events import EventLog
+        log = EventLog(self.plan0.batch_dir / "log")
+        I.add_collections(self.project, ["合集四"], log=log)
+        last = log.last(verb="init")
+        self.assertEqual(last.fields["mode"], "add")
+        self.assertEqual(last.fields["collections"], ["合集四"])
+
+    def test_rebuilds_broken_progress_table(self):
+        from vedio import progress as P
+        (self.plan0.batch_dir / P.FILE_NAME).write_text("坏了\n", encoding="utf-8")
+        result = I.add_collections(self.project, ["合集四"])
+        self.assertTrue(result["progress_rebuilt"])
+        self.assertTrue((self.plan0.batch_dir / (P.FILE_NAME + ".bak")).is_file())
+        table = P.ProgressTable.load(self.plan0.batch_dir / P.FILE_NAME)
+        self.assertIn("合集四", table.collections())
 
 
 if __name__ == "__main__":

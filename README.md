@@ -30,7 +30,7 @@
 |---|---|
 | `vedio paths` | 看目录在哪（只读） |
 | `vedio status` | 批次进度表（只读） |
-| `vedio init` | 建批次 |
+| `vedio init` | 建批次；`--add 合集四,合集五` 给已有批次加合集 |
 | `vedio subtitle` | 字幕三步：加行号 / 纠错 / 回写 srt |
 | `vedio export` | 批量导出剪映草稿 |
 | `vedio splice` | 切分长片 + 拼片头片尾 |

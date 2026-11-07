@@ -189,6 +189,49 @@ def cmd_status(args: argparse.Namespace, project: context.Project) -> int:
 
 # ─────────────────────────── 动词：export ───────────────────────────
 
+def _add_collections(args: argparse.Namespace, init_stage) -> int:
+    """`init --add 合集四,合集五`：给已有批次补建目录 + 进度表追加行"""
+    from .events import EventLog
+
+    try:
+        project = context.Project.open(args.game, args.batch)
+    except context.ContextError as exc:
+        return _fail(exc.code, exc.message, args.json, **exc.detail)
+
+    log = EventLog(project.log_dir)
+    try:
+        with _quiet_stdout(args.json):
+            payload = init_stage.add_collections(project, _split_list(args.add) or [], log=log)
+    except init_stage.InitError as exc:
+        if args.json:
+            print(json.dumps(exc.as_dict(), ensure_ascii=False, indent=2), file=_result_err())
+        else:
+            print(f"错误：{exc.message}", file=_result_err())
+            if exc.hint:
+                print(f"  {exc.hint}", file=_result_err())
+        return EXIT_FAIL
+
+    def render(p: dict) -> str:
+        lines = [f"批次 {p['name']}：请求加 {len(p['requested'])} 个合集"]
+        dirs_note = "" if p["created_dirs"] else "（都已存在）"
+        lines.append(f"  目录：新建 {p['created_dirs']} 个{dirs_note}")
+        if p["added"]:
+            lines.append(f"  进度表：新增 {len(p['added'])} 行 —— {'、'.join(p['added'])}")
+        if p["already_present"]:
+            lines.append(f"  进度表：这些行本来就在，没动 —— {'、'.join(p['already_present'])}")
+        if p["progress_rebuilt"]:
+            lines.append("  ⚠ 原进度表解析不了，已备份为 .bak 并重建")
+        if p["collections_field"]:
+            lines.append(f"  game.yaml 的 collections 已更新为 {p['collections_field']}")
+        lines.append(f"  进度表文件：{p['progress_file']}")
+        lines.append("")
+        lines.append("下一步：把录屏放进新合集的 素材/，然后照常往下走。")
+        return "\n".join(lines)
+
+    _emit(payload, args.json, render)
+    return EXIT_OK
+
+
 def cmd_export(args: argparse.Namespace, project: context.Project) -> int:
     """批量导出草稿（会点剪映，耗时最长）"""
     from .events import EventLog
@@ -220,8 +263,13 @@ def cmd_export(args: argparse.Namespace, project: context.Project) -> int:
 # ─────────────────────────── 动词：init ───────────────────────────
 
 def cmd_init(args: argparse.Namespace, project: Optional[context.Project]) -> int:
-    """建批次（不需要先有批次，所以不打开 project）"""
+    """建批次（不需要先有批次，所以不打开 project）；`--add` 给已有批次加合集"""
     from .stages import init as init_stage
+
+    # 用 `is not None` 而不是真值判断：`--add ""` 是"给了但为空"，
+    # 该报"没有指定合集"，而不是掉进正常的建批次分支。
+    if args.add is not None:
+        return _add_collections(args, init_stage)
 
     overrides: dict[str, Any] = {}
     for item in (args.set or []):
@@ -538,6 +586,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--set", action="append", metavar="键=值",
                         help="覆盖规则里的一项，如 --set duration.episode_body=450；可重复")
     p_init.add_argument("--dry-run", action="store_true", help="只算不建")
+    p_init.add_argument("--add", metavar="合集四,合集五",
+                        help="给已有批次补建这些合集（不动已有的）")
     p_init.set_defaults(handler=cmd_init, needs_project=False)
 
     p_sub = sub.add_parser("subtitle", help="字幕三步：加行号 / 纠错 / 回写 srt")

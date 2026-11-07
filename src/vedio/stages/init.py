@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import copy
+import re
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -31,7 +32,7 @@ from typing import Any, Optional
 
 import yaml
 
-from .. import context
+from .. import context, progress
 from ..context import BATCH_TREE, COLLECTION_TREE, RULES_FILE, MANIFEST_FILE, TITLES_FILE
 from ..events import DONE, EventLog
 
@@ -226,6 +227,9 @@ def build_plan(game: str, batch: str, *, collections: int = 1, host: str = "",
     plan.files[batch_dir / RULES_FILE] = render_game_yaml(plan)
     plan.files[batch_dir / MANIFEST_FILE] = render_manifest(plan)
     plan.files[batch_dir / TITLES_FILE] = render_titles(plan)
+    # 第四样：进度表。它不是"可选"的 —— 批次一建好就该有地方记进度，
+    # 否则第一天就没人知道该往哪写。全 `·`，等着各环节来打勾。
+    plan.files[batch_dir / progress.FILE_NAME] = render_progress(plan)
     return plan
 
 
@@ -324,6 +328,15 @@ def render_titles(plan: InitPlan) -> str:
 """
 
 
+def render_progress(plan: InitPlan) -> str:
+    """建批次时的进度表：所有合集全 `·`，等着各环节来打勾。"""
+    collections = [context.collection_name(i) for i in range(1, plan.collections + 1)]
+    ignored = plan.rules.get("ignore_collections") or []
+    if isinstance(ignored, str):
+        ignored = [ignored]
+    return progress.ProgressTable.create(plan.name, collections, list(ignored)).render()
+
+
 # ─────────────────────────── 落盘 ───────────────────────────
 
 def apply(plan: InitPlan, log: Optional[EventLog] = None) -> dict[str, Any]:
@@ -347,3 +360,102 @@ def apply(plan: InitPlan, log: Optional[EventLog] = None) -> dict[str, Any]:
         **plan.as_dict(),
         "created_dirs": created_dirs,
     }
+
+
+# ─────────────────────────── 给已有批次加合集 ───────────────────────────
+
+#: `game.yaml` 里 `collections:` 那一行。只做行级替换，**不做 YAML 往返** ——
+#: 往返会抹掉人写的注释，那是本项目的冻结规则。
+_COLLECTIONS_LINE_RE = re.compile(r"^(collections:\s*)(\d+)(\s*)$", re.MULTILINE)
+
+
+def add_collections(project: "context.Project", names: list[str], *,
+                    log: Optional[EventLog] = None) -> dict[str, Any]:
+    """给已有批次补建合集目录，并在进度表里追加行。
+
+    场景：2026-12 先做了 3 个合集就交付了，过几天继续做 4、5 个。
+
+    - 只补缺的子目录，已有的一个不动
+    - 进度表追加行（已有的行原样保留）
+    - `game.yaml` 的 `collections` 更新到最大序号（行级替换，不碰注释）
+    - 幂等：名字都存在时什么都不改，如实报"已存在"
+
+    Raises:
+        InitError: 批次不存在 / 名字不合法 / 一个名字都没给
+    """
+    cleaned: list[str] = []
+    for raw in names:
+        name = str(raw).strip()
+        if not name:
+            continue
+        if context.collection_index(name) is None:
+            raise InitError("bad_collection_name",
+                            f"合集名不合法：{name!r}（应形如「合集四」「合集十二」）")
+        if name not in cleaned:
+            cleaned.append(name)
+    if not cleaned:
+        raise InitError("no_collections", "没有指定要加哪些合集",
+                        hint="例如：vedio init --add 合集四,合集五")
+
+    batch_dir = project.batch_dir
+    if not (batch_dir / RULES_FILE).is_file():
+        raise InitError("batch_not_found", f"批次不存在：{batch_dir}",
+                        hint="先正常建批次（不带 --add）")
+
+    created_dirs = 0
+    for name in cleaned:
+        for sub in (None, *COLLECTION_TREE):
+            d = batch_dir / "合集" / name if sub is None else batch_dir / "合集" / name / sub
+            if not d.is_dir():
+                d.mkdir(parents=True, exist_ok=True)
+                created_dirs += 1
+
+    # 进度表：追加行
+    ignored = project.ignored_collections()
+    result = progress.add_collections(batch_dir / progress.FILE_NAME,
+                                      project.name, cleaned, ignored)
+
+    # game.yaml 的 collections 更新到最大序号
+    bumped = _bump_collections(batch_dir / RULES_FILE,
+                               max(context.collection_index(n) for n in cleaned))
+
+    if log is not None:
+        log.emit("init", DONE, mode="add", collections=cleaned,
+                 created_dirs=created_dirs,
+                 progress_added=result["added"], progress_rebuilt=result["rebuilt"],
+                 collections_field=bumped)
+
+    return {
+        "ok": True,
+        "mode": "add",
+        "name": project.name,
+        "batch_dir": str(batch_dir),
+        "requested": cleaned,
+        "added": result["added"],
+        "already_present": result["existing"],
+        "created_dirs": created_dirs,
+        "progress_file": str(batch_dir / progress.FILE_NAME),
+        "progress_rebuilt": result["rebuilt"],
+        "collections_field": bumped,
+    }
+
+
+def _bump_collections(rules_path: Path, minimum: int) -> Optional[int]:
+    """把 `collections:` 拉到至少 `minimum`。返回新值（没变则 None）。
+
+    只替换那一行数字，**不重写整个 YAML** —— PyYAML 往返会把注释抹掉。
+    """
+    try:
+        text = rules_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = _COLLECTIONS_LINE_RE.search(text)
+    if match is None:
+        return None
+    current = int(match.group(2))
+    if current >= minimum:
+        return None
+    new_text = _COLLECTIONS_LINE_RE.sub(
+        lambda m: f"{m.group(1)}{minimum}{m.group(3)}", text, count=1)
+    rules_path.write_text(new_text, encoding="utf-8", newline="\n")
+    return minimum
