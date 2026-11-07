@@ -60,6 +60,24 @@ AI 会按 [`AGENTS.md` §1](AGENTS.md) 自动做这些事：
 
 ---
 
+## 开发：跑测试
+
+```bash
+.venv\Scripts\python -m unittest discover -s tests -v
+```
+
+或双击 `run_tests.bat`。
+
+测试用标准库 `unittest`（零依赖），**不需要 ffmpeg、不需要真实的 `conf/本机.yaml`、不碰真实视频**：
+
+- 时长探测通过 `Env.probe` 注入假函数
+- 配置以字典直接传入 `Env`
+- 全部在临时目录里造占位文件
+
+加新能力时请一并加测试。当前覆盖 `src/util/balance.py`（37 个用例）。
+
+---
+
 ## 完成度标识
 
 | 标识 | 含义 |
