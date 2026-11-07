@@ -312,6 +312,51 @@ class TestEnsureVideo(unittest.TestCase):
             C.JianyingController._ensure_video(Path("MC-01.mp3"))
 
 
+class TestSetExportDir(unittest.TestCase):
+    """剪映的导出目录可以通过「导出至」右边的文件夹按钮设进去。
+
+    实测（6.0.1）：点它弹的是 Windows 标准 IFileDialog（`#32770`「请选择导出路径」），
+    里面 `EditControl name='文件夹:'` 支持 SetValue，`ButtonControl name='选择文件夹'`
+    可以确认。这样导出直接落到目标目录，不用事后跨盘搬 1 GB。
+    """
+
+    def test_target_dir_from_directory(self):
+        self.assertEqual(C.JianyingController._target_dir(r"D:\a\b"), Path(r"D:\a\b"))
+
+    def test_target_dir_from_file(self):
+        self.assertEqual(C.JianyingController._target_dir(r"D:\a\b\x.mp4"), Path(r"D:\a\b"))
+
+    def test_returns_false_without_icon(self):
+        """找不到文件夹图标 → 返回 False，让调用方退回"先导后搬\""""
+        ctrl = make_controller(app_status="pre_export")
+        with mock.patch.object(ctrl, "_clickable", return_value=False):
+            self.assertFalse(ctrl.set_export_dir(Path(r"D:\x")))
+
+    def test_returns_false_when_dialog_never_appears(self):
+        ctrl = make_controller(app_status="pre_export")
+
+        class FakeIcon:
+            def Click(self, **kwargs):
+                pass
+
+        class FakeApp:
+            def TextControl(self, **kwargs):
+                return FakeIcon()
+
+        ctrl.app = FakeApp()
+        with mock.patch.object(ctrl, "_clickable", return_value=True), \
+             mock.patch.object(C.time, "sleep", return_value=None), \
+             mock.patch.object(ctrl, "_find_folder_dialog", return_value=None):
+            self.assertFalse(ctrl.set_export_dir(Path(r"D:\x"), timeout=0))
+
+    def test_find_folder_dialog_searches_whole_tree(self):
+        """它挂在剪映窗口下面，不是桌面顶层窗口 —— 只看顶层会漏"""
+        with mock.patch.object(C.uia, "GetRootControl"), \
+             mock.patch.object(C.uia, "WalkControl", return_value=[]) as walk:
+            self.assertIsNone(C.JianyingController._find_folder_dialog())
+        walk.assert_called_once()
+
+
 class TestDefaults(unittest.TestCase):
     def test_ui_timeout_is_180(self):
         """用户定的上限：界面就绪 180 秒"""

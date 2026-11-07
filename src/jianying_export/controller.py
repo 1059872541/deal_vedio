@@ -217,6 +217,143 @@ class JianyingController:
 
         return self._poll(probe, "进入编辑器（导出按钮就绪）", timeout)
 
+    #: 「导出至」右边那个文件夹图标
+    FOLDER_ICON_DESC = "ExportFileNameInputBtn"
+    #: 点它弹出的 Windows 标准目录框
+    FOLDER_DIALOG_TITLE = "请选择导出路径"
+    #: 目录框里确认按钮的名字
+    FOLDER_DIALOG_OK = "选择文件夹"
+
+    def set_export_dir(self, directory: Path, timeout: float = 20.0) -> bool:
+        """把剪映的导出目录设成指定路径。
+
+        为什么值得做：剪映会记住上次的导出目录，程序不设的话，合集二会被导到
+        合集一的文件夹里，之后还得 `shutil.move` 跨目录搬一个 1 GB 的文件。
+        实测（6.0.1）：点「导出至」右边的文件夹图标，弹的是 **Windows 标准
+        IFileDialog**（`#32770`，「请选择导出路径」），里面
+        `EditControl name='文件夹:'` + `ButtonControl name='选择文件夹'` 都能操作，
+        `SetValue` 直接生效。
+
+        Returns:
+            True = 设置成功且读回确认；False = 任何一步失败（调用方退回"先导后搬"）
+        """
+        try:
+            icon = self.app.TextControl(
+                searchDepth=2, Compare=ControlFinder.desc_matcher(self.FOLDER_ICON_DESC, exact=True)
+            )
+            if not self._clickable(icon):
+                return False
+            icon.Click(simulateMove=False)
+            time.sleep(0.5)
+
+            dialog = self._poll(self._find_folder_dialog, "导出目录对话框",
+                                timeout=timeout, interval=0.5)
+            edit = dialog.EditControl(
+                searchDepth=3, Compare=lambda c, d: (c.Name or "") == "文件夹:"
+            )
+            if not edit.Exists(2):
+                self._close_dialog(dialog)
+                return False
+            try:
+                edit.GetValuePattern().SetValue(str(directory))
+            except Exception:
+                # 极端情况下 ValuePattern 不可用 → 退化为键盘输入
+                edit.Click(simulateMove=False)
+                uia.SendKeys("{Ctrl}a")
+                uia.SendKeys(str(directory))
+            time.sleep(0.3)
+
+            ok_btn = dialog.ButtonControl(
+                searchDepth=3, Compare=lambda c, d: (c.Name or "") == self.FOLDER_DIALOG_OK
+            )
+            if not ok_btn.Exists(2):
+                self._close_dialog(dialog)
+                return False
+            ok_btn.Click(simulateMove=False)
+            time.sleep(0.8)
+
+            # 读回确认：面板上的路径必须真的换了目录
+            actual = self._read_export_path()
+            if actual is None:
+                return False
+            return Path(actual).parent == Path(directory)
+        except Exception:
+            try:
+                dialog = self._find_folder_dialog()
+                if dialog is not None:
+                    self._close_dialog(dialog)
+            except Exception:
+                pass
+            return False
+
+    @staticmethod
+    def _find_folder_dialog():
+        """在整棵 UI 树里找「请选择导出路径」对话框。
+
+        它**不是**桌面顶层窗口（挂在剪映窗口下面），所以不能只看
+        `GetRootControl().GetChildren()`。
+        """
+        try:
+            for ctrl, _depth in uia.WalkControl(uia.GetRootControl(), maxDepth=8):
+                if ((ctrl.ClassName or "") == "#32770"
+                        and JianyingController.FOLDER_DIALOG_TITLE in (ctrl.Name or "")):
+                    return ctrl
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _close_dialog(dialog) -> None:
+        """放弃使用这个对话框：先点取消，再退回 WindowPattern.Close。"""
+        try:
+            cancel = dialog.ButtonControl(
+                searchDepth=3, Compare=lambda c, d: (c.Name or "") == "取消"
+            )
+            if cancel.Exists(1):
+                cancel.Click(simulateMove=False)
+                return
+        except Exception:
+            pass
+        try:
+            pattern = dialog.GetWindowPattern()
+            if pattern:
+                pattern.Close()
+        except Exception:
+            pass
+
+    def _open_export_panel(self, attempts: int = 3, per_try: float = 30.0) -> None:
+        """点「导出」按钮打开面板。点不开就重试，别一次点不中就死等超时。
+
+        面板已经在的话直接返回（上次运行可能把它留在了打开状态）。
+        """
+        last_error: Optional[Exception] = None
+        for i in range(1, attempts + 1):
+            self._safe_refresh()
+            if self.app_status == "pre_export":
+                return
+
+            btn = self.app.TextControl(
+                searchDepth=2, Compare=ControlFinder.desc_matcher("MainWindowTitleBarExportBtn")
+            )
+            if not self._clickable(btn):
+                last_error = AutomationError("未在编辑窗口中找到导出按钮")
+            else:
+                btn.Click(simulateMove=False)
+                try:
+                    self._wait_export_panel(timeout=per_try)
+                    return
+                except AutomationError as exc:
+                    last_error = exc
+                    if i < attempts:
+                        print(f"导出面板没弹出，重试（第 {i} 次点击）")
+            time.sleep(1.0)
+
+        raise AutomationError(
+            f"点了 {attempts} 次「导出」，面板都没弹出来。"
+            f"剪映可能有个对话框挡着（比如「草稿正在使用」），请看一眼手动关掉。\n"
+            f"最后一次错误：{last_error}"
+        )
+
     def _wait_export_panel(self, timeout: Optional[float] = None):
         """等导出面板就绪：出现『导出』窗口且 ExportOkBtn 可点"""
         def probe():
@@ -322,24 +459,25 @@ class JianyingController:
         # 等编辑器渲染完（原实现固定 sleep 60 秒）
         self._wait_enter_editor()
 
-        # ── 2. 打开导出面板 ──
-        export_btn = self.app.TextControl(
-            searchDepth=2, Compare=ControlFinder.desc_matcher("MainWindowTitleBarExportBtn")
-        )
-        if not export_btn.Exists(0):
-            raise AutomationError("未在编辑窗口中找到导出按钮")
-        export_btn.Click(simulateMove=False)
+        # ── 2. 打开导出面板（点不开就重试）──
+        #
+        # 实测：剪映有时收到点击但面板不弹（上次运行中途失败会留下怪状态）。
+        # 原实现只点一次然后死等 180 秒 —— 表现就是"鼠标移到导出按钮，然后停住"。
+        # 现在最多点 3 次，每次等 30 秒，点不开再点。
+        self._open_export_panel(attempts=3)
 
-        # 等面板渲染完（原实现固定 sleep 60 秒）
-        self._wait_export_panel()
+        # ── 3. 设导出目录（能设就直接落到目标位置，省掉事后搬 1 GB 文件）──
+        target_dir = self._target_dir(output_path) if output_path is not None else None
+        if target_dir is not None and self.set_export_dir(target_dir):
+            print(f"导出目录已设为：{target_dir}")
 
-        # ── 3. 读回当前导出路径（面板上直接显示了完整路径）──
+        # ── 4. 读回当前导出路径（面板上直接显示了完整路径）──
         export_path = self._read_export_path()
         if not export_path:
             export_path = str(Path.home() / "Videos" / f"{draft_name}.mp4")
             print(f"警告：未能从界面读到导出路径，按默认推定为 {export_path}")
         else:
-            print(f"剪映默认导出到：{export_path}")
+            print(f"剪映导出到：{export_path}")
 
         # ── 4/5. 设分辨率、帧率（**尽力而为，失败不中断**）──
         #
@@ -395,16 +533,19 @@ class JianyingController:
         self._safe_refresh()
         self.switch_to_home()
 
-        # ── 9. 把文件移到目标位置 ──
+        # ── 9. 把文件移到目标位置（目录已经设对的话就不用搬了）──
         if output_path is not None:
             src = self._locate_exported(export_path, draft_name)
             dest = self._resolve_dest(src, output_path)
             self._ensure_video(dest)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            if dest.exists():
-                raise AutomationError(f"目标文件已存在，拒绝覆盖：{dest}")
-            shutil.move(str(src), str(dest))
-            print(f"已移动到：{dest}")
+            if src.resolve() == dest.resolve():
+                print(f"文件已在目标位置：{dest}")
+            else:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if dest.exists():
+                    raise AutomationError(f"目标文件已存在，拒绝覆盖：{dest}")
+                shutil.move(str(src), str(dest))
+                print(f"已移动到：{dest}")
 
         print(f"导出 {draft_name} 完成")
 
@@ -512,6 +653,12 @@ class JianyingController:
             f"请在剪映里勾一次「视频导出」（顺手取消「字幕导出」），"
             f"剪映会记住这个组合，之后就不用再管了。"
         )
+
+    @staticmethod
+    def _target_dir(output_path: str) -> Optional[Path]:
+        """`output_path` 是目录就用它；是文件就用它的父目录。"""
+        p = Path(output_path)
+        return p.parent if p.suffix else p
 
     @staticmethod
     def _resolve_dest(src: Path, output_path: str) -> Path:
