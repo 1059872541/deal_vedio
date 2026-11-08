@@ -25,22 +25,22 @@
 # ══════════════════════════════════════════════════════════════════
 
 # ── 1. 工具 ──
-# 来源：跑 `ffmpeg -version`；路径取 conf/本机.yaml 的 tool 段，能解析到就用解析结果
-tools:
-  ffmpeg: "D:/softwares/ffmpeg/bin/ffmpeg.exe"
-  ffprobe: "D:/softwares/ffmpeg/bin/ffprobe.exe"
-  version: "6.1.1"            # 只记主版本，用于判断某参数是否可用
-  probe: "2026-11-07T14:30:00"
+# 来源：跑 `ffmpeg -version`；路径取 conf/本机.yaml 的 tool 段，能解析到就用解析结果,
+# tools:
+#   ffmpeg: "D:/softwares/ffmpeg/bin/ffmpeg.exe"
+#   ffprobe: "D:/softwares/ffmpeg/bin/ffprobe.exe"
+#   version: "6.1.1"            # 只记主版本，用于判断某参数是否可用
+#   probe: "2026-11-07T14:30:00"
 
 # ── 2. 机器 ──
 # 来源：Windows 的 CPU/内存查询；GPU 名从系统信息读
 # 用途：估并发上限、回答"这台机器跑得动吗"
-machine:
-  cpu_physical: 4             # 物理核 —— 决定软编上限
-  cpu_logical: 8              # 逻辑核
-  memory_gb: 16               # 影响能同时开几个 1080p 解码器
-  gpu: ["Intel Iris Xe"]      # 有空就记，没有就是 []（纯软编机器）
-  os: "Windows 10 22H2"
+# machine:
+#   cpu_physical: 4             # 物理核 —— 决定软编上限
+#   cpu_logical: 8              # 逻辑核
+#   memory_gb: 16               # 影响能同时开几个 1080p 解码器
+#   gpu: ["Intel Iris Xe"]      # 有空就记，没有就是 []（纯软编机器）
+#   os: "Windows 10 22H2"
 
 # ── 3. 编码器（实测，不是列表）──
 # 来源：init 时对每个候选跑一次 1 秒黑帧真编码
@@ -48,28 +48,28 @@ machine:
 #   ⚠ 只看 `ffmpeg -encoders` 输出里有名字是不可靠的：
 #     h264_qsv 在任何 ffmpeg 里都会被列出来，但只有 Intel 核显的机器才编得动。
 # 用途：需要重编码时选谁；换 AMD 机器时不会"所有编码器都失败"
-encoders:
-  h264_qsv:
-    usable: true
-    speed: "4.2x"             # 相对实时的倍数，1.0 = 实时
-    tested: "2026-11-07"
-  libx264:
-    usable: true
-    speed: "0.9x"             # 4 核软编，比实时还慢 —— 能当兜底，不能当主力
-    tested: "2026-11-07"
-  h264_nvenc:
-    usable: false
-    reason: "no NVIDIA GPU"
+# encoders:
+#   h264_qsv:
+#     usable: true
+#     speed: "4.2x"             # 相对实时的倍数，1.0 = 实时
+#     tested: "2026-11-07"
+#   libx264:
+#     usable: true
+#     speed: "0.9x"             # 4 核软编，比实时还慢 —— 能当兜底，不能当主力
+#     tested: "2026-11-07"
+#   h264_nvenc:
+#     usable: false
+#     reason: "no NVIDIA GPU"
 
 # ── 4. 实测基线 ──
 # 来源：每次运行后，从 events.jsonl 取出该环节的实际秒数，做滑动平均
 # 用途：预估耗时；判断"这次是不是异常慢"；决定要不要优化
-throughput:
-  export_per_collection: 2712      # 秒。剪映导出 + 等待
-  copy_splice_per_collection: 58   # 秒。不重编码的切分+拼接
-  encode_splice_per_collection: 1180  # 秒。参数不一致时的兜底路径
-  correct_per_collection: 186      # 秒。字幕纠正（含 API 往返）
-  samples: 6                       # 参与平均的运行次数；样本越多越可信
+# throughput:
+#   export_per_collection: 2712      # 秒。剪映导出 + 等待
+#   copy_splice_per_collection: 58   # 秒。不重编码的切分+拼接
+#   encode_splice_per_collection: 1180  # 秒。参数不一致时的兜底路径
+#   correct_per_collection: 186      # 秒。字幕纠正（含 API 往返）
+#   samples: 6                       # 参与平均的运行次数；样本越多越可信
 
 # ── 5. 超时阈值 ──
 # 来源：throughput × 1.5（留 50% 余量）
@@ -83,8 +83,8 @@ limits:
 # ── 6. 安全阀 ──
 # 由你决定，程序不自动改
 policy:
-  allow_encode: true          # 片头片尾参数与正片不一致时，允许重编码兜底
-                              # 关掉的话会直接报错停下，逼你统一导出参数
-  auto_fallback_copy: true    # copy 拼接失败时，自动改用重编码重试一次
-  keep_long_video: false      # 成片生成后是否保留 剪辑/ 里的长片
-                              # 保留 = 占 11GB/合集，但可以事后重切
+  allow_encode:
+    true # 片头片尾参数与正片不一致时，允许重编码兜底
+    # 关掉的话会直接报错停下，逼你统一导出参数
+  auto_fallback_copy: true # copy 拼接失败时，自动改用重编码重试一次
+  keep_long_video: true # 成片生成后是否保留 剪辑/ 里的长片
