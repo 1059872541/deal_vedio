@@ -277,7 +277,7 @@ vedio <动词> --game <游戏> --batch <批次> [--collections 合集一,合集�
 
 设计原则：**文件系统即真相**（没有数据库）；**内核不知道模型存在也能跑**（除字幕那一段）。
 
-为什么这样设计、踩过什么坑：见 [EVOLUTION.md](EVOLUTION.md)。
+为什么这样设计、踩过什么坑：见 [EVOLUTION.md](docs/EVOLUTION.md)。
 
 ---
 
@@ -294,8 +294,10 @@ vedio <动词> --game <游戏> --batch <批次> [--collections 合集一,合集�
 | 你是谁 | 从哪开始 |
 |---|---|
 | **使用者** | 本文件 → [安装与配置](docs/安装与配置.md) → [批次与目录](docs/批次与目录.md) |
-| **想接手的开发者** | [现状](docs/现状.md) → [EVOLUTION.md](EVOLUTION.md) → `src/vedio/` |
+| **想接手的开发者** | [现状](docs/现状.md) → [EVOLUTION.md](docs/EVOLUTION.md) → `src/vedio/` |
 | **AI 助手** | [AGENTS.md](AGENTS.md)（操作契约，不是给用户读的入口） |
 
-其余文档：[日志](docs/日志.md) · [状态与校验](docs/状态与校验.md) ·
-[目标架构](docs/目标架构.md) · [流水线现状](docs/流水线现状.md)
+其余文档：[日志](docs/日志.md) · [状态与校验](docs/状态与校验.md)
+
+重构期的设计笔记（目标架构、当时的流水线现状）已移出仓库，放在本地
+`research/` 里 —— 换台机器就没有，需要的话看 [EVOLUTION.md](docs/EVOLUTION.md)。

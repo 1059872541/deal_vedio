@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """vedio.cli —— 命令行入口
 
-设计约束（照着 `docs/目标架构.md`）：
+设计约束：
 
 1. **所有动词只收 `--game` / `--batch` / `--collection`，绝不收路径。**
    路径一律由 `vedio.context` 推导。这条一破，"脚本不认路"的老毛病就回来了。

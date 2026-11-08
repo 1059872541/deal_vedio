@@ -151,5 +151,5 @@
 | `status` 怎么判、超额和缺片头怎么处理 | [状态与校验](docs/状态与校验.md) |
 | 日志每一类是什么 | [日志](docs/日志.md) |
 | 做到哪了、还缺什么 | [现状](docs/现状.md) |
-| 为什么这样设计、踩过什么坑 | `EVOLUTION.md` |
+| 为什么这样设计、踩过什么坑 | [EVOLUTION.md](docs/EVOLUTION.md) |
 | 开发和实测数据 | `research/`（不进 git，换机器没有） |
