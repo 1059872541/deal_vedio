@@ -682,6 +682,11 @@ def build_ledger(project: Project, collections: Optional[list[str]] = None, *,
             problems.append(f"内容介绍/关键字没写进去：{exc}")
 
     involved = sorted({r.collection for r in rows})
+    # 每个合集单独记一条 done —— status 判「台账」看的是**该合集的** ledger done
+    # （`log.last(verb="ledger", collection=…, event="done")`）。
+    # 只记下面那条汇总事件（collections=[…]）它认不出来，会一直提示"跑 ledger"。
+    for name in involved:
+        log.emit("ledger", DONE, name, file=out.name)
     log.emit("ledger", DONE, rows=len(rows), collections=involved, file=out.name,
              warnings=problems)
     # 台账那一列写文件名 —— 这是唯一"文件里推不出来"的事实，必须记下来

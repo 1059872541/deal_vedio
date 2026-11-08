@@ -290,6 +290,19 @@ class TestLedger(Base):
         self.assertIsNotNone(done)
         self.assertEqual(done.fields["rows"], 3)
 
+    def test_event_recorded_per_collection(self):
+        """每个合集都要有一条自己的 ledger done。
+
+        status 判「台账」用的是 `log.last(verb="ledger", collection=…, event="done")`：
+        只记汇总事件（collections=[…]）它会认不出来，跑完仍显示"没跑"。
+        """
+        self.prep()
+        L.build_ledger(self.p, ["合集一"], log=self.log)
+        per = self.log.last(verb="ledger", collection="合集一", event="done")
+        self.assertIsNotNone(per)
+        summary = self.log.last(verb="ledger", event="done")
+        self.assertEqual(per.fields["file"], summary.fields["file"])
+
 
 if __name__ == "__main__":
     unittest.main()
