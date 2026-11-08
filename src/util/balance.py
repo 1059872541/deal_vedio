@@ -57,7 +57,7 @@ def load_local_conf(path: Path | None = None) -> dict:
     """读 conf/本机.yaml（机器相关配置）"""
     p = Path(path) if path else REPO_ROOT / "conf" / "本机.yaml"
     if not p.exists():
-        sys.exit(f"缺少 {p}（见 AGENTS.md §1）")
+        sys.exit(f"缺少 {p}（见 docs/安装与配置.md）")
     return load_yaml(p)
 
 

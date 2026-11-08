@@ -323,7 +323,7 @@ def splice_collection(project: Project, collection: Collection, *,
 
     name = collection.name
 
-    # ── 1. 前置：片头片尾必须齐（AGENTS.md §5.2） ──
+    # ── 1. 前置：片头片尾必须齐（docs/状态与校验.md） ──
     tpl = project.validate_templates(name)
     if not tpl["ok"]:
         first = tpl["problems"][0]["message"] if tpl["problems"] else "片头片尾未登记"

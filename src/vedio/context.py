@@ -137,7 +137,7 @@ class LocalConfig:
         if not p.is_file():
             raise LocalConfigError(
                 f"找不到本机配置：{p}",
-                hint="首次使用要先走 AGENTS.md §1，把工作区目录写进 conf/本机.yaml",
+                hint="首次使用先看 docs/安装与配置.md，把工作区目录写进 conf/本机.yaml",
             )
         data = _read_yaml(p) or {}
         return cls.from_dict(data, source=str(p))
@@ -760,7 +760,7 @@ class Project:
         return p if p.is_absolute() else (self.batch_dir / p)
 
     def validate_templates(self, collection: str) -> dict[str, Any]:
-        """拼接前置校验（AGENTS.md §5.2）。返回 ``{"ok": bool, "problems": [...]}``。"""
+        """拼接前置校验（docs/状态与校验.md）。返回 ``{"ok": bool, "problems": [...]}``。"""
         problems: list[dict[str, Any]] = []
         intro = self.intro_for(collection)
         outro = self.outro_for()

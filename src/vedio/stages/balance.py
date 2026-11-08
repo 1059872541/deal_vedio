@@ -10,7 +10,8 @@
 - `check`：每个合集实际多少、目标多少、超出多少。**不含任何建议**
 - `move`：把 A 多出来的部分切给 B（关键帧处切、`-c copy`、不重编码）
 
-"该不该匀、匀给谁"由人（或 agent 问过用户之后）决定。见 AGENTS.md §5.1。
+"该不该匀、匀给谁"由人（或 agent 问过用户之后）决定。
+决策流程见 docs/状态与校验.md。
 """
 
 from __future__ import annotations
