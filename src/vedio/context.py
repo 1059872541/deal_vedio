@@ -126,9 +126,10 @@ class LocalConfig:
     ffmpeg: str = "ffmpeg"
     ffprobe: str = "ffprobe"
     window_title: str = "剪映专业版"
-    #: 台账（片单）输出根目录。台账是交付物，不属于某个批次，单独放
-    ledger_root: Path | None = None
-    #: 片单 Excel 生成脚本（稳定的外部实现，见 conf/本机.yaml 注释）
+    #: 片单 Excel 生成脚本（稳定的外部实现，见 conf/本机.yaml 注释）。
+    #: **相对路径按仓库根目录解析** —— 脚本跟着仓库走（``.claude/skills/...``），
+    #: 不跟着某台机器走；写相对路径换机器就不用改配置。
+    #: （台账本身固定写在批次目录里，见 `ledger.ledger_target`，这里不配输出目录。）
     excel_generator: Path | None = None
 
     @classmethod
@@ -154,7 +155,6 @@ class LocalConfig:
         tool = data.get("tool") or {}
         paths = data.get("paths") or {}
         draft = (jy.get("draft_dir") or "").strip()
-        ledger_root = (paths.get("ledger_root") or "").strip()
         excel_gen = (paths.get("excel_generator") or "").strip()
         return cls(
             workspace_root=Path(ws),
@@ -162,8 +162,7 @@ class LocalConfig:
             ffmpeg=str(tool.get("ffmpeg") or "ffmpeg"),
             ffprobe=str(tool.get("ffprobe") or "ffprobe"),
             window_title=str(jy.get("window_title") or "剪映专业版"),
-            ledger_root=Path(ledger_root) if ledger_root else None,
-            excel_generator=Path(excel_gen) if excel_gen else None,
+            excel_generator=_repo_relative(excel_gen) if excel_gen else None,
         )
 
 
@@ -1013,6 +1012,17 @@ def collection_name(index: int) -> str:
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent.parent
+
+
+def _repo_relative(value: str) -> Path:
+    """把配置里的路径变成绝对路径：相对路径按**仓库根目录**解析。
+
+    为什么锚在仓库而不是当前工作目录：`paths.excel_generator` 指的是仓库内的
+    skill 脚本（``.claude/skills/...``），从别的目录调 ``vedio`` 也得找得到。
+    绝对路径原样返回，这样老配置（写死 ``D:\\...``）仍然能用。
+    """
+    p = Path(value)
+    return p if p.is_absolute() else (_repo_root() / p)
 
 
 def _read_yaml(path: Path) -> dict[str, Any] | None:

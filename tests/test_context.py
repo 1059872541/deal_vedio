@@ -175,6 +175,48 @@ class TestLocalConfig(unittest.TestCase):
         self.assertEqual(cfg.ffmpeg, "C:/ffmpeg.exe")
         self.assertEqual(cfg.window_title, "JY")
 
+    # ── 片单生成脚本：相对仓库根目录，跟着仓库走 ──
+
+    def test_excel_generator_relative_to_repo_root(self):
+        """相对路径按仓库根解析 —— 换机器/换工作目录都还能找到脚本。"""
+        cfg = C.LocalConfig.from_dict({
+            "workspace": {"root": "/tmp/ws"},
+            "paths": {"excel_generator":
+                      ".claude/skills/excel-sheet-generator/scripts/generate_excel_from_json.py"},
+        })
+        self.assertTrue(cfg.excel_generator.is_absolute())
+        self.assertEqual(
+            cfg.excel_generator,
+            C._repo_root() / ".claude" / "skills" / "excel-sheet-generator"
+            / "scripts" / "generate_excel_from_json.py",
+        )
+
+    def test_excel_generator_absolute_still_works(self):
+        """老配置里写死的绝对路径不能被改坏（换回仓库外脚本随时可以）。"""
+        cfg = C.LocalConfig.from_dict({
+            "workspace": {"root": "/tmp/ws"},
+            "paths": {"excel_generator": "C:/tools/gen.py"},
+        })
+        self.assertEqual(cfg.excel_generator, Path("C:/tools/gen.py"))
+
+    def test_ledger_root_is_not_a_config_any_more(self):
+        """台账固定写批次目录；旧的 ledger_root 不再生效，也不该留字段。"""
+        cfg = C.LocalConfig.from_dict({
+            "workspace": {"root": "/tmp/ws"},
+            "paths": {"ledger_root": "D:/old/out"},
+        })
+        self.assertFalse(hasattr(cfg, "ledger_root"))
+
+    def test_example_config_generator_exists(self):
+        """模板指的那个脚本必须真的在仓库里 —— 换机器最常在这里断。"""
+        import yaml
+
+        data = yaml.safe_load(
+            (C._repo_root() / "conf" / "本机.example.yaml").read_text(encoding="utf-8-sig")
+        )
+        cfg = C.LocalConfig.from_dict(data)
+        self.assertTrue(cfg.excel_generator.is_file(), cfg.excel_generator)
+
 
 # ─────────────────────────── 打开批次 ───────────────────────────
 

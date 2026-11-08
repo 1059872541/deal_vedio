@@ -26,6 +26,9 @@ title_compare/
 !.claude/skills/
 .claude/skills/*
 !.claude/skills/batch-video-renamer/
+# 片单生成脚本：`conf/本机.yaml` 的 paths.excel_generator 指向它，
+# 是台账环节的运行依赖 —— 必须入库，否则换台机器 git clone 完就跑不了 ledger。
+!.claude/skills/excel-sheet-generator/
 
 # ---- 含明文凭证，不入库（百度/夸克 MCP 配置）----
 .mcp.json

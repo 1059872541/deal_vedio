@@ -44,3 +44,12 @@ tool:
 jianying:
   draft_dir: ""
   window_title: "剪映专业版"
+
+# ── 台账（片单）──
+# 台账固定写在本批次目录里（{批次}/26年{主播}{月}月第一批片单.xlsx），
+# 不在这里配输出目录。
+paths:
+  # 片单 Excel 的稳定实现（汇总行 / 合并单元格 / 配色）。
+  # 路径**相对仓库根目录**：脚本就在仓库里（.claude/skills/），换机器不用改。
+  # 想换成仓库外的脚本也可以，写绝对路径即可。
+  excel_generator: .claude/skills/excel-sheet-generator/scripts/generate_excel_from_json.py
